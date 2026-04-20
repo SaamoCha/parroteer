@@ -6,6 +6,7 @@ import { normalize, type NormalizedFingerprint } from "./normalize.js";
 import { diffFingerprints, formatReport, formatUtlsComparison } from "./report.js";
 
 const BASELINES_DIR = path.resolve("fixtures/baselines");
+const CAPTURES_DIR = path.resolve("fixtures/captures");
 const REPORTS_DIR = path.resolve("reports");
 
 // Map browser type to utls parrot name
@@ -35,13 +36,21 @@ function saveBaseline(browserName: string, fp: NormalizedFingerprint): void {
   fs.writeFileSync(path.join(BASELINES_DIR, `${browserName}.json`), JSON.stringify(baseline, null, 2) + "\n");
 }
 
+function saveRawCapture(name: string, data: Record<string, unknown>): void {
+  fs.mkdirSync(CAPTURES_DIR, { recursive: true });
+  const file = path.join(CAPTURES_DIR, `${name}-${new Date().toISOString().slice(0, 10)}.json`);
+  fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
+}
+
 function captureUtls(parrotName: string): Record<string, unknown> | null {
   try {
     const out = execSync(`go run cmd/utls-capture/main.go ${parrotName}`, {
       timeout: 30000,
       encoding: "utf8",
     });
-    return JSON.parse(out);
+    const result = JSON.parse(out);
+    saveRawCapture(`utls-${parrotName}`, result);
+    return result;
   } catch (err) {
     console.error(`  utls ${parrotName} capture failed: ${(err as Error).message}`);
     return null;
@@ -97,9 +106,16 @@ async function main() {
       continue;
     }
 
+    saveRawCapture(browser.name, result);
+    const hasTls = !!result.tls;
+    console.log(`  response keys: [${Object.keys(result).join(", ")}]`);
+    console.log(`  has tls object: ${hasTls}`);
+
     const fp = normalize(result);
     console.log(`  cipher_suites: [${fp.cipher_suites.join(", ")}]`);
     console.log(`  extensions:    [${fp.extensions.join(", ")}]`);
+    console.log(`  supported_versions: [${fp.supported_versions.join(", ")}]`);
+    console.log(`  signature_algorithms: [${fp.signature_algorithms.join(", ")}]`);
 
     // Compare against baseline
     const baseline = loadBaseline(browser.name);
