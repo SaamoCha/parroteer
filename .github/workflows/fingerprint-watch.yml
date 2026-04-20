@@ -1,0 +1,78 @@
+name: Fingerprint Watch
+
+on:
+  schedule:
+    # Daily at 06:00 UTC
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      browser:
+        description: "Single browser to capture (leave empty for all)"
+        required: false
+        type: string
+      notify:
+        description: "Open GitHub Issue on fingerprint change"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install browsers
+        run: bash scripts/install-browsers.sh
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Run fingerprint capture
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.browser }}" ]; then
+            ARGS="--browser ${{ inputs.browser }}"
+          fi
+          if [ "${{ inputs.notify }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+            ARGS="$ARGS --notify"
+          fi
+          npx tsx src/run.ts $ARGS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit baseline updates
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add fixtures/baselines/
+          if git diff --cached --quiet; then
+            echo "No baseline changes to commit."
+          else
+            git commit -m "chore: update fingerprint baselines [skip ci]"
+            git push
+          fi
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fingerprint-report-${{ github.run_id }}
+          path: reports/
+          retention-days: 90
+          if-no-files-found: ignore

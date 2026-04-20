@@ -1,0 +1,20 @@
+{
+  "name": "parroteer",
+  "version": "1.0.0",
+  "description": "Automated browser fingerprint monitoring and parrot generation pipeline for [utls](https://github.com/refraction-networking/utls) and [uquic](https://github.com/refraction-networking/uquic).",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "selenium-webdriver": "^4.43.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  }
+}
