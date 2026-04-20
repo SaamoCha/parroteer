@@ -1,11 +1,12 @@
 # Parroteer
 
-Automated browser fingerprint monitoring and parrot generation pipeline for
+Automated browser fingerprint monitoring and parrot drift detection for
 [utls](https://github.com/refraction-networking/utls) and
 [uquic](https://github.com/refraction-networking/uquic).
 
-Captures real browser TLS/QUIC fingerprints, detects structural changes, and
-generates candidate parrot updates as draft PRs.
+Runs daily on GitHub Actions. Captures real browser TLS fingerprints via
+Selenium, normalizes them, compares against utls parrots, and opens a
+GitHub Issue when a parrot falls out of sync with its real browser.
 
 ## Why
 
@@ -18,69 +19,109 @@ sometimes weeks late. Parroteer closes that gap.
 ## How It Works
 
 ```
-cron / manual trigger
+Daily cron (UTC 06:00) or manual trigger
   │
-  ├─ 1. Capture ── launch real browser (Selenium + real binary)
-  │                 → hit tlsfingerprint.io (public reflector)
-  │                 → get structured TLS ClientHello JSON
+  ├─ 1. Update utls ── go get utls@main (always test latest commit)
   │
-  ├─ 2. Normalize ── strip GREASE values, random, session ID
+  ├─ 2. Capture ── launch real browsers (Selenium + system binaries)
+  │                 + utls parrots (Go, via cmd/utls-capture)
+  │                 → hit tls.browserleaks.com reflector
+  │                 → get full TLS ClientHello JSON
+  │
+  ├─ 3. Normalize ── replace GREASE values with sentinel (preserve position)
+  │                   sort randomized extension order (preserve GREASE bookends)
+  │                   extract supported_versions, key_shares, sig_algs from extensions
   │                   → produce stable structural fingerprint
   │
-  ├─ 3. Diff ── compare against baseline (last known fingerprint)
-  │             → changed or not?
+  ├─ 4. Diff ── compare browser vs baseline (fingerprint drift detection)
+  │             compare browser vs utls parrot (parrot accuracy check)
   │
-  ├─ 4. Generate ── if structure changed:
-  │                  → produce utls ClientHelloSpec (Go code)
-  │                  → produce uquic QUICSpec candidate (Initial Packet only)
-  │
-  └─ 5. Notify ── no change: log only
-                   changed: open GitHub Issue
-                   changed + generator passes replay: open draft PR
+  └─ 5. Notify ── known diff unchanged: log only, no Issue
+                   new or changed diff: open GitHub Issue
+                   baseline updated: commit back to repo
 ```
 
 ## Architecture
 
 ```
 parroteer/
-├── .github/
-│   └── workflows/
-│       └── fingerprint-watch.yml    # cron + manual dispatch (optional)
+├── .github/workflows/
+│   └── fingerprint-watch.yml  # daily cron + manual dispatch
+│
+├── cmd/
+│   ├── utls-capture/          # Go: capture utls parrot fingerprint via reflector
+│   ├── ch-compare/            # Go: compare ClientHello structures
+│   └── ch-inspect/            # Go: inspect ClientHello details
 │
 ├── src/
-│   ├── capture.ts          # Selenium: launch browser, visit reflector
-│   ├── normalize.ts        # strip noise, produce stable fingerprint
-│   ├── diff.ts             # structural diff, report generation
-│   ├── report.ts           # format Issue body
-│   └── run.ts              # entry point: capture → normalize → diff → notify
+│   ├── capture.ts             # Selenium: launch browser, visit reflector, get JSON
+│   ├── normalize.ts           # strip noise, preserve GREASE positions, extract fields
+│   ├── report.ts              # structural diff + format Issue body
+│   └── run.ts                 # entry point: capture → normalize → diff → notify
 │
 ├── fixtures/
-│   └── baselines/          # last known normalized fingerprints
-│       ├── chrome-stable.json
-│       ├── chrome-beta.json
-│       ├── msedge-stable.json
-│       ├── firefox-stable.json
-│       └── firefox-nightly.json
+│   ├── baselines/             # last known browser fingerprints (committed by CI)
+│   └── known-diffs/           # last seen utls-vs-browser diffs (dedup mechanism)
 │
-├── reports/                # diff reports (gitignore)
-│
+├── reports/                   # diff reports (gitignored, uploaded as CI artifacts)
 ├── scripts/
-│   └── install-browsers.sh # install Chrome, Edge, Firefox + drivers
+│   └── install-browsers.sh    # install Chrome, Edge, Firefox on Ubuntu
 │
-├── package.json
-├── tsconfig.json
-└── README.md
+├── go.mod / go.sum            # Go deps (utls, auto-updated to latest commit)
+├── package.json               # Node deps (selenium-webdriver, tsx)
+└── tsconfig.json
 ```
 
 ## Reflector
 
-Uses [tlsfingerprint.io](https://tlsfingerprint.io) — a public instance of
-[clienthellod](https://github.com/gaukas/clienthellod). The browser visits
-this URL and gets back a JSON representation of its own TLS ClientHello.
+Uses [tls.browserleaks.com](https://tls.browserleaks.com/) (root endpoint,
+not `/json`). The root endpoint returns a full `tls` object with per-extension
+detail:
 
-No self-hosted reflector needed for TLS fingerprinting. Self-hosting only
-becomes necessary for QUIC capture (Phase 2+), because the reflector needs
-to advertise `Alt-Svc` to trigger browser QUIC upgrade.
+- `tls.cipher_suites` — `[{id, name}, ...]` with GREASE entries
+- `tls.extensions` — `[{id, name, data}, ...]` with nested fields:
+  - ext 43 `supported_versions` — version list
+  - ext 51 `key_share` — group IDs and key lengths
+  - ext 13 `signature_algorithms` — full sig alg list
+  - ext 16 `alpn` — protocol list
+
+The `/json` endpoint only returns ja3/ja4 summaries and lacks these details.
+
+## GREASE Handling
+
+GREASE (RFC 8701) values are **not stripped** — their positions are preserved
+as sentinel values (`-1`). This matters for fingerprint mimicking because:
+
+- Chrome always places GREASE at the start of cipher suites
+- Chrome wraps extensions with GREASE at first and last position
+- Chrome adds GREASE to supported_groups, supported_versions, key_shares
+- Firefox does not use GREASE at all
+
+If a browser changes its GREASE placement strategy, parroteer detects it.
+
+Chrome randomizes extension order per-connection, so the normalizer peels
+off GREASE bookends, sorts the interior, then re-attaches them.
+
+## Notification Dedup
+
+utls-vs-browser diffs are saved to `fixtures/known-diffs/`. A hash of the
+diff result is compared against the last known hash:
+
+- **Same hash** → known diff, skip notification
+- **Different hash** → new or changed diff, open Issue
+- **Parrot now matches** → clear known diff record
+
+This prevents daily duplicate Issues for the same stale parrot.
+
+## utls Version
+
+The CI workflow runs `go get github.com/refraction-networking/utls@main`
+before each capture. This means:
+
+- Every run tests against the **latest utls commit** on main
+- If someone pushes a parrot fix to utls, the next daily run will pick it up
+- `go.mod` and `go.sum` are committed back, so you can track which utls
+  version each run tested against
 
 ## Why Selenium
 
@@ -94,253 +135,116 @@ No patched or bundled browsers. This matters because:
 - Selenium uses the system-installed browser directly, so the captured
   fingerprint is exactly what a real user would produce
 
-Driver management is handled by selenium-manager (built into Selenium v4+),
-which auto-downloads the correct chromedriver/geckodriver version.
+Driver management is handled by selenium-manager (built into Selenium v4+).
 
 ## Browser Coverage
 
-### Phase 1 (Linux VPS)
+### Current (GitHub Actions ubuntu-latest)
 
-| Browser | Binary | Driver | Install |
-|---|---|---|---|
-| Chrome Stable | `/usr/bin/google-chrome-stable` | chromedriver (auto) | `apt install google-chrome-stable` |
-| Chrome Beta | `/usr/bin/google-chrome-beta` | chromedriver (auto) | `apt install google-chrome-beta` |
-| Edge Stable | `/usr/bin/microsoft-edge-stable` | msedgedriver (auto) | `apt install microsoft-edge-stable` |
-| Firefox Stable | `/usr/bin/firefox` | geckodriver (auto) | `apt install firefox` |
-| Firefox Nightly | `/opt/firefox-nightly/firefox` | geckodriver (auto) | download from Mozilla |
+| Browser | Binary | Install |
+|---|---|---|
+| Chrome Stable | `/usr/bin/google-chrome-stable` | `scripts/install-browsers.sh` |
+| Edge Stable | `/usr/bin/microsoft-edge-stable` | `scripts/install-browsers.sh` |
+| Firefox Stable | `/usr/bin/firefox` | `scripts/install-browsers.sh` |
 
-### Future (requires macOS)
+### Planned
 
 | Browser | Notes |
 |---|---|
-| Safari | safaridriver is built into macOS. GitHub Actions macOS runner or real Mac. |
-| iOS Safari | real device or Xcode simulator |
+| Chrome Beta | Same install script, not yet enabled |
+| Firefox Nightly | Manual download from Mozilla |
+| Safari | Requires macOS runner + safaridriver |
 
-## Normalization Rules
+## Normalization Fields
 
-### TLS — keep:
-- Cipher suites (order + values)
-- Extension set and order
-- Supported versions
-- Key shares (groups, not values)
-- ALPN / ALPS
-- Signature algorithms
-- Padding rules
+| Field | Source | GREASE |
+|---|---|---|
+| cipher_suites | `tls.cipher_suites[].id` | preserved |
+| extensions | `tls.extensions[].id` | bookends preserved, interior sorted |
+| supported_groups | ext 10 `named_group_list` | preserved |
+| supported_versions | ext 43 `versions` | preserved |
+| key_share_groups | ext 51 `client_shares[].group.id` | preserved |
+| signature_algorithms | ext 13 `supported_signature_algorithms` | N/A |
+| alpn | ext 16 `protocol_name_list` | N/A |
+| ec_point_formats | ext 11 `ec_point_format_list` | N/A |
+| psk_key_exchange_mode | ext 45 `ke_modes` | N/A |
 
-### TLS — discard:
-- Random bytes
-- Session ID
-- GREASE specific values (replace with placeholder)
+Fallback: if `tls` object is absent (e.g. `/json` endpoint), parses from
+`ja3_text` + `ja4_r` with reduced coverage (no GREASE, no versions/key_shares).
 
-## Generation Criteria
+## Usage
 
-A generated parrot is only promoted to draft PR if:
+### Manual run (local)
 
-1. TLS structural diff is fully explainable
-2. Generated `ClientHelloSpec` compiles
-3. Replay with new spec against reflector matches real browser fingerprint
-4. Any ECH / token / PSK / retry anomaly → downgrade to Issue, no code change
+```bash
+# Install browsers (Ubuntu)
+bash scripts/install-browsers.sh
 
-## Development Plan
+# Install deps
+npm ci
 
-### Phase 1: Capture + Detect (Chrome + Edge + Firefox)
+# Run all browsers
+npx tsx src/run.ts
 
-#### 1.1 Project scaffold
+# Run single browser
+npx tsx src/run.ts --browser chrome-stable
 
-- [ ] `npm init`
-- [ ] Install deps: `selenium-webdriver`, `typescript`, `tsx`
-- [ ] Create `tsconfig.json`
-- [ ] Create directory structure: `src/`, `fixtures/baselines/`, `reports/`
-- [ ] Verify: `npx tsx --version` runs
+# Run with GitHub Issue notification
+npx tsx src/run.ts --notify
+```
 
-Deliverable: empty project that compiles TypeScript.
+### GitHub Actions
 
-#### 1.2 Capture one browser (Chrome Stable)
+The workflow runs automatically at UTC 06:00 daily. To trigger manually:
 
-Prove the concept: launch real Chrome, hit reflector, get JSON back.
+1. Go to **Actions** → **Fingerprint Watch**
+2. Click **Run workflow**
+3. Optionally specify a single browser or disable notifications
 
-- [ ] Install Chrome Stable: `apt install google-chrome-stable`
-- [ ] Verify it runs headless: `google-chrome-stable --headless=new --dump-dom about:blank`
-- [ ] Create `src/capture.ts`:
-      - Hardcode Chrome Stable for now
-      - `chrome.Options` with `--headless=new`
-      - Set binary: `/usr/bin/google-chrome-stable`
-      - Navigate to `https://tlsfingerprint.io/tls`
-      - Read page body → parse JSON → print to stdout
-      - Quit driver
-- [ ] Run: `npx tsx src/capture.ts`
-- [ ] Verify output is valid ClientHello JSON with cipher suites, extensions, etc.
-- [ ] Save output to `fixtures/captures/chrome-stable-raw.json` for reference
+### Normalize a raw capture
 
-Deliverable: one command prints Chrome Stable's real TLS fingerprint as JSON.
+```bash
+npx tsx src/normalize.ts fixtures/captures/chrome-stable-raw.json
+```
 
-#### 1.3 Understand the reflector output
+## Development Roadmap
 
-Before writing normalize/diff, study what tlsfingerprint.io actually returns.
+### Phase 1: Capture + Detect — done
 
-- [ ] Read the saved JSON from 1.2 carefully
-- [ ] Identify which fields are structural (stable across runs)
-- [ ] Identify which fields are noise (change every run)
-- [ ] Run capture twice, diff the raw JSON manually to confirm noise fields
-- [ ] Document the JSON schema in a comment or `fixtures/schema-notes.md`
-
-Deliverable: you know exactly which fields to keep and which to strip.
-
-#### 1.4 Normalize
-
-- [ ] Create `src/normalize.ts`
-- [ ] Input: raw ClientHello JSON (from capture or file)
-- [ ] Strip noise (based on 1.3 findings):
-      - GREASE values → `"GREASE"`
-      - `random` bytes
-      - `session_id`
-      - `key_share` public key bytes (keep group IDs only)
-      - Any other per-run noise found in 1.3
-- [ ] Keep structural fields:
-      - Cipher suite list (order preserved)
-      - Extension list (type + order)
-      - Supported versions
-      - Key share groups
-      - ALPN values
-      - Signature algorithms
-- [ ] Output: normalized JSON
-- [ ] Test: capture twice → normalize both → outputs must be identical
-
-Deliverable: `normalize()` turns noisy raw JSON into stable fingerprint.
-
-#### 1.5 Diff
-
-- [ ] Create `src/diff.ts`
-- [ ] Input: two normalized fingerprint JSON objects
-- [ ] Compare field by field:
-      - Cipher suites: added / removed / reordered
-      - Extensions: added / removed / reordered
-      - Supported versions: changed
-      - Key share groups: changed
-      - ALPN: changed
-      - Signature algorithms: changed
-- [ ] Output: `{ hasChanges: boolean, changes: [...] }`
-- [ ] Test: same fingerprint → no changes
-- [ ] Test: manually edit a baseline (remove a cipher) → reports the change
-
-Deliverable: `diff()` detects and reports structural fingerprint changes.
-
-#### 1.6 End-to-end for Chrome Stable
-
-Wire capture → normalize → diff into one command for a single browser.
-
-- [ ] Create `src/run.ts`
-- [ ] Flow:
-      1. Load baseline from `fixtures/baselines/chrome-stable.json`
-         (if no baseline exists, capture + normalize + save as baseline, done)
-      2. Capture → normalize → diff against baseline
-      3. If changed: print report, save new baseline
-      4. If unchanged: print "no changes"
-- [ ] CLI: `npx tsx src/run.ts`
-- [ ] Test: first run creates baseline. Second run reports no changes.
-- [ ] Test: upgrade Chrome → run again → reports changes (or wait for
-      a real update and verify)
-
-Deliverable: single command detects Chrome Stable fingerprint drift.
-
-#### 1.7 Multi-browser support
-
-Generalize capture to support all target browsers.
-
-- [ ] Install remaining browsers:
-      ```bash
-      apt install google-chrome-beta
-      apt install microsoft-edge-stable
-      apt install firefox
-      # Firefox Nightly
-      curl -L "https://download.mozilla.org/?product=firefox-nightly-latest&os=linux64" \
-        | tar -xjf - -C /opt/firefox-nightly
-      ```
-- [ ] Refactor `src/capture.ts` to accept browser config:
-      ```typescript
-      type BrowserConfig = {
-        name: string           // 'chrome-stable', 'firefox-nightly', etc.
-        type: 'chrome' | 'firefox' | 'edge'
-        binaryPath: string
-      }
-      ```
-- [ ] Chrome/Edge: `chrome.Options` / `edge.Options` + `--headless=new`
-- [ ] Firefox: `firefox.Options` + `-headless`
-- [ ] Define browser configs in `src/browsers.ts`:
-      ```typescript
-      export const browsers: BrowserConfig[] = [
-        { name: 'chrome-stable', type: 'chrome', binaryPath: '/usr/bin/google-chrome-stable' },
-        { name: 'chrome-beta',   type: 'chrome', binaryPath: '/usr/bin/google-chrome-beta' },
-        { name: 'edge-stable',   type: 'edge',   binaryPath: '/usr/bin/microsoft-edge-stable' },
-        { name: 'firefox-stable',type: 'firefox', binaryPath: '/usr/bin/firefox' },
-        { name: 'firefox-nightly',type:'firefox', binaryPath: '/opt/firefox-nightly/firefox' },
-      ]
-      ```
-- [ ] Update `src/run.ts` to loop over all browsers
-- [ ] CLI:
-      ```bash
-      npx tsx src/run.ts                        # all browsers
-      npx tsx src/run.ts --browser chrome-stable # single browser
-      ```
-- [ ] Test: each browser produces valid, distinct fingerprints
-
-Deliverable: one command captures and diffs all 5 browsers.
-
-#### 1.8 Notification
-
-- [ ] Create `src/report.ts`:
-      - Format diff results into GitHub Issue markdown
-      - Title: `[chrome-stable] TLS fingerprint changed`
-      - Body: structured diff (what was added/removed/reordered)
-- [ ] Add `--notify` flag to `src/run.ts`:
-      - If any browser changed + `--notify` is set:
-        `gh issue create --title "..." --body "..."`
-- [ ] Test: manually edit a baseline, run with `--notify`, verify Issue created
-
-Deliverable: fingerprint changes automatically open GitHub Issues.
-
-#### 1.9 Cron
-
-- [ ] Write `scripts/install-browsers.sh` that installs all browsers
-- [ ] Add to crontab:
-      ```
-      0 6 * * * cd /path/to/parroteer && npx tsx src/run.ts --notify 2>&1 >> /var/log/parroteer.log
-      ```
-- [ ] Verify: wait one day, check log and GitHub Issues
-
-Deliverable: fully automated daily fingerprint monitoring.
+- [x] Selenium capture for Chrome, Edge, Firefox
+- [x] Normalization with GREASE position preservation
+- [x] Structural diff (field-level added/removed/changed)
+- [x] utls parrot vs real browser comparison
+- [x] GitHub Actions daily cron
+- [x] Known-diff dedup (no duplicate Issues)
+- [x] Auto-update utls to latest commit
 
 ### Phase 2: Parrot Generation + QUIC
 
-- [ ] Implement ClientHello → ClientHelloSpec Go code generator
-- [ ] Implement replay check (gen spec → connect to reflector → compare)
-- [ ] Deploy self-hosted reflector (needed for QUIC Alt-Svc)
-- [ ] Add QUIC Initial capture (two visits for Alt-Svc upgrade)
-- [ ] Implement QUIC normalization + QUICSpec generator
+- [ ] ClientHello → ClientHelloSpec Go code generator
+- [ ] Replay check (gen spec → connect to reflector → compare)
+- [ ] Self-hosted reflector for QUIC Alt-Svc
+- [ ] QUIC Initial capture + QUICSpec generator
 - [ ] On successful replay: open draft PR with generated Go code
 
-### Future: Safari / iOS
+### Future
 
-- [ ] Safari via GitHub Actions macOS runner + safaridriver
-- [ ] iOS via Xcode simulator or real device
-- [ ] Or manual capture when Apple releases major updates (~2x/year)
+- [ ] Safari via macOS runner
+- [ ] Chrome Beta / Firefox Nightly
+- [ ] iOS Safari via Xcode simulator
 
 ## Known Challenges
 
-**Headless mode matters:** Chrome's legacy headless shell and new headless
-mode produce different TLS fingerprints. Always use `--headless=new` for
-Chrome/Edge. Firefox uses `-headless` which runs the real browser engine.
+**Headless mode matters:** Chrome's `--headless=new` and Firefox's `-headless`
+produce the same TLS fingerprint as headed mode. Legacy `--headless` (Chrome)
+does not.
 
 **QUIC requires two visits:** Browsers use TCP on first connection. The
 reflector must send `Alt-Svc` header so the browser upgrades to QUIC on the
 second visit. Only relevant in Phase 2.
 
 **Safari requires macOS:** Safari's TLS fingerprint comes from Apple's
-SecureTransport, which only exists on macOS/iOS. Cannot be captured on Linux.
-
-## Status
-
-Early design phase.
+SecureTransport, which only exists on macOS/iOS.
 
 ## License
 
