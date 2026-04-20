@@ -3,9 +3,10 @@ import * as path from "path";
 import { execSync } from "child_process";
 import { capture, BROWSERS, type BrowserConfig } from "./capture.js";
 import { normalize, type NormalizedFingerprint } from "./normalize.js";
-import { diffFingerprints, formatReport, formatUtlsComparison } from "./report.js";
+import { diffFingerprints, formatReport, formatUtlsComparison, type DiffResult } from "./report.js";
 
 const BASELINES_DIR = path.resolve("fixtures/baselines");
+const KNOWN_DIFFS_DIR = path.resolve("fixtures/known-diffs");
 const CAPTURES_DIR = path.resolve("fixtures/captures");
 const REPORTS_DIR = path.resolve("reports");
 
@@ -21,11 +22,17 @@ interface Baseline {
   captured_at: string;
 }
 
+// A known-diff records the last seen utls-vs-browser diff result.
+// If the current diff matches, we skip notification.
+interface KnownDiff {
+  diff_hash: string;
+  recorded_at: string;
+}
+
 function loadBaseline(browserName: string): Baseline | null {
   const file = path.join(BASELINES_DIR, `${browserName}.json`);
   if (!fs.existsSync(file)) return null;
   const data = JSON.parse(fs.readFileSync(file, "utf8"));
-  // Support legacy baselines that only have ja3n_text
   if (data.ja3n_text && !data.fingerprint) return null;
   return data;
 }
@@ -34,6 +41,30 @@ function saveBaseline(browserName: string, fp: NormalizedFingerprint): void {
   fs.mkdirSync(BASELINES_DIR, { recursive: true });
   const baseline: Baseline = { fingerprint: fp, captured_at: new Date().toISOString() };
   fs.writeFileSync(path.join(BASELINES_DIR, `${browserName}.json`), JSON.stringify(baseline, null, 2) + "\n");
+}
+
+// Compute a stable hash of a DiffResult for comparison.
+// We stringify the diffs array — if the same fields differ in the same way,
+// the hash will be identical, preventing duplicate notifications.
+function hashDiff(diff: DiffResult): string {
+  if (!diff.hasChanges) return "match";
+  const key = diff.diffs
+    .map((d) => `${d.field}:${d.baseline}→${d.current}`)
+    .sort()
+    .join("|");
+  return key;
+}
+
+function loadKnownDiff(label: string): KnownDiff | null {
+  const file = path.join(KNOWN_DIFFS_DIR, `${label}.json`);
+  if (!fs.existsSync(file)) return null;
+  return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function saveKnownDiff(label: string, diffHash: string): void {
+  fs.mkdirSync(KNOWN_DIFFS_DIR, { recursive: true });
+  const known: KnownDiff = { diff_hash: diffHash, recorded_at: new Date().toISOString() };
+  fs.writeFileSync(path.join(KNOWN_DIFFS_DIR, `${label}.json`), JSON.stringify(known, null, 2) + "\n");
 }
 
 function saveRawCapture(name: string, data: Record<string, unknown>): void {
@@ -93,7 +124,7 @@ async function main() {
   }
 
   const reports: string[] = [];
-  let anyChange = false;
+  let anyNewChange = false;
 
   for (const browser of browsers) {
     console.log(`Capturing ${browser.name}...`);
@@ -117,7 +148,7 @@ async function main() {
     console.log(`  supported_versions: [${fp.supported_versions.join(", ")}]`);
     console.log(`  signature_algorithms: [${fp.signature_algorithms.join(", ")}]`);
 
-    // Compare against baseline
+    // Compare against baseline (browser fingerprint drift detection)
     const baseline = loadBaseline(browser.name);
     if (!baseline) {
       console.log(`  No baseline found. Saving initial baseline.`);
@@ -128,7 +159,7 @@ async function main() {
         console.log(`  CHANGED since baseline!`);
         reports.push(formatReport(browser.name, baseline.fingerprint, fp, diff));
         saveBaseline(browser.name, fp);
-        anyChange = true;
+        anyNewChange = true;
       } else {
         console.log(`  No change from baseline.`);
       }
@@ -140,13 +171,27 @@ async function main() {
     if (utlsFp) {
       const utlsDiff = diffFingerprints(utlsFp, fp);
       const label = `${browser.name} vs utls ${parrotName}`;
+      const diffHash = hashDiff(utlsDiff);
+      const knownDiff = loadKnownDiff(`${browser.name}-vs-utls-${parrotName}`);
+
       if (utlsDiff.hasChanges) {
         console.log(`  utls ${parrotName} parrot DIFFERS from real ${browser.name}!`);
         reports.push(formatUtlsComparison(label, fp, utlsFp, utlsDiff));
-        anyChange = true;
+
+        if (knownDiff?.diff_hash === diffHash) {
+          console.log(`  (known diff, skipping notification)`);
+        } else {
+          console.log(`  (NEW diff detected, will notify)`);
+          anyNewChange = true;
+          saveKnownDiff(`${browser.name}-vs-utls-${parrotName}`, diffHash);
+        }
       } else {
         console.log(`  utls ${parrotName} parrot matches.`);
         reports.push(formatUtlsComparison(label, fp, utlsFp, utlsDiff));
+        // Clear known diff if parrot now matches
+        if (knownDiff) {
+          saveKnownDiff(`${browser.name}-vs-utls-${parrotName}`, "match");
+        }
       }
     }
 
@@ -168,8 +213,8 @@ async function main() {
     console.log(fullReport);
     console.log("=".repeat(60));
 
-    // Notify via GitHub Issue
-    if (notify && anyChange) {
+    // Notify via GitHub Issue — only if there's a genuinely new change
+    if (notify && anyNewChange) {
       const title = `[Parroteer] TLS fingerprint changes detected — ${new Date().toISOString().slice(0, 10)}`;
       try {
         execSync(`gh issue create --title "${title}" --body "$(cat ${reportFile})"`, {
