@@ -1,6 +1,7 @@
 {
   "fingerprint": {
     "cipher_suites": [
+      -1,
       4865,
       4866,
       4867,
@@ -38,6 +39,7 @@
       -1
     ],
     "supported_groups": [
+      -1,
       4588,
       29,
       23,

@@ -9,29 +9,13 @@
  *   - how many GREASE values appear in each field
  *   - where they appear (e.g. Chrome wraps extensions with GREASE first+last)
  *
- * Noise removed:
- *   - GREASE specific values → replaced with GREASE_SENTINEL (-1)
- *   - handshake_duration, is_session_resumption, using_psk
- *   - selected_protocol, selected_curve_group, selected_cipher_suite
- *   - session_ticket_supported, support_secure_renegotiation
- *
- * Structural fields kept (from tls object, NOT ja3n — ja3n strips GREASE
- * and sorts extensions, losing structural info):
- *   - Cipher suites (order + GREASE positions preserved)
- *   - Extensions (original order + GREASE positions preserved)
- *   - Supported groups / curves (order + GREASE positions preserved)
- *   - Supported versions (GREASE positions preserved)
- *   - Key share groups (GREASE positions preserved)
- *   - Signature algorithms
- *   - ALPN protocols
- *   - EC point formats
- *   - PSK key exchange mode
- *   - Cert compression algorithms
- *   - Early data support
+ * Parsing strategy: extract all fields from the `tls` sub-object (always
+ * present in reflector responses). Does NOT depend on `ja3`, `ja3n`, or
+ * `scrapfly_fp` — those may be absent for non-browser TLS clients (e.g.
+ * utls-capture).
  */
 
 // Sentinel value representing a GREASE slot in normalized output.
-// The specific GREASE value (0x0A0A..0xFAFA) is noise; the position is structural.
 export const GREASE_SENTINEL = -1;
 
 export interface NormalizedFingerprint {
@@ -53,9 +37,68 @@ function isGrease(value: number): boolean {
   return value >= 0x0a0a && (value & 0x0f0f) === 0x0a0a;
 }
 
-// Replace GREASE values with sentinel, keep everything else
 function replaceGrease(values: number[]): number[] {
   return values.map((v) => (isGrease(v) ? GREASE_SENTINEL : v));
+}
+
+// Standard TLS cipher suite name → numeric ID mapping.
+// Only includes suites commonly seen in modern browsers.
+const CIPHER_NAME_TO_ID: Record<string, number> = {
+  TLS_AES_128_GCM_SHA256: 0x1301,
+  TLS_AES_256_GCM_SHA384: 0x1302,
+  TLS_CHACHA20_POLY1305_SHA256: 0x1303,
+  TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: 0xc02b,
+  TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256: 0xc02f,
+  TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384: 0xc02c,
+  TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384: 0xc030,
+  TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: 0xcca9,
+  TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: 0xcca8,
+  TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA: 0xc013,
+  TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA: 0xc014,
+  TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA: 0xc009,
+  TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA: 0xc00a,
+  TLS_RSA_WITH_AES_128_GCM_SHA256: 0x009c,
+  TLS_RSA_WITH_AES_256_GCM_SHA384: 0x009d,
+  TLS_RSA_WITH_AES_128_CBC_SHA: 0x002f,
+  TLS_RSA_WITH_AES_256_CBC_SHA: 0x0035,
+  TLS_RSA_WITH_AES_128_CBC_SHA256: 0x003c,
+  TLS_RSA_WITH_AES_256_CBC_SHA256: 0x003d,
+  TLS_RSA_WITH_3DES_EDE_CBC_SHA: 0x000a,
+  TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA: 0xc012,
+  TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384: 0xc024,
+  TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256: 0xc023,
+  TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256: 0xc027,
+  TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384: 0xc028,
+  TLS_DHE_RSA_WITH_AES_128_GCM_SHA256: 0x009e,
+  TLS_DHE_RSA_WITH_AES_256_GCM_SHA384: 0x009f,
+  TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256: 0xccaa,
+  TLS_DHE_RSA_WITH_AES_128_CBC_SHA: 0x0033,
+  TLS_DHE_RSA_WITH_AES_256_CBC_SHA: 0x0039,
+  TLS_EMPTY_RENEGOTIATION_INFO_SCSV: 0x00ff,
+  TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256_ALT: 0xc02b,
+};
+
+// Parse cipher name to numeric ID.
+// Handles: "0xNNNN" (hex, usually GREASE), named suites, unknown → skip.
+function parseCipherId(name: string): number | null {
+  // Hex format like "0x3A3A" — GREASE or other raw values
+  if (name.startsWith("0x")) {
+    const val = parseInt(name, 16);
+    return isNaN(val) ? null : val;
+  }
+  return CIPHER_NAME_TO_ID[name] ?? null;
+}
+
+// Parse numeric ID from parenthesized string like "X25519 (29)" or "TLS_GREASE (0x5A5A)"
+function parseParenId(s: string): number | null {
+  if (s.includes("GREASE") || s.includes("TLS_GREASE")) {
+    // Extract hex GREASE value
+    const hex = s.match(/0x([0-9A-Fa-f]+)/);
+    if (hex) return parseInt(hex[1], 16);
+    return null;
+  }
+  const match = s.match(/\((\d+)\)/);
+  return match ? Number(match[1]) : null;
 }
 
 // Parse extension ID from reflector string like "server_name (0) (IANA)"
@@ -63,83 +106,62 @@ function replaceGrease(values: number[]): number[] {
 function parseExtensionId(ext: string): number {
   if (ext.startsWith("GREASE")) return GREASE_SENTINEL;
   const match = ext.match(/\((\d+)\)/);
-  return match ? Number(match[1]) : -2; // -2 for unparseable
+  return match ? Number(match[1]) : -2;
 }
 
 // Chrome randomizes extension order each connection, but GREASE slots at
 // the boundaries are structural. Preserve leading/trailing GREASE sentinels,
 // sort the non-GREASE interior so the result is stable across captures.
 function stabilizeExtensionOrder(extIds: number[]): number[] {
-  // Peel off leading GREASE sentinels
-  const leading: number[] = [];
   let i = 0;
+  const leading: number[] = [];
   while (i < extIds.length && extIds[i] === GREASE_SENTINEL) {
     leading.push(GREASE_SENTINEL);
     i++;
   }
 
-  // Peel off trailing GREASE sentinels
-  const trailing: number[] = [];
   let j = extIds.length - 1;
+  const trailing: number[] = [];
   while (j >= i && extIds[j] === GREASE_SENTINEL) {
     trailing.push(GREASE_SENTINEL);
     j--;
   }
 
-  // Sort the middle (non-GREASE) portion
   const middle = extIds.slice(i, j + 1).sort((a, b) => a - b);
-
   return [...leading, ...middle, ...trailing];
-}
-
-// Parse cipher: "0x3A3A" is GREASE, named ciphers need ja3 mapping
-// We use the ja3 field (raw, unsorted) which has numeric IDs in original order
-function parseCiphersFromJa3(ja3: string): number[] {
-  const parts = ja3.split(",");
-  if (parts.length < 2) return [];
-  return replaceGrease(
-    parts[1].split("-").map(Number).filter((n) => !isNaN(n)),
-  );
-}
-
-// Parse supported groups from ja3 (4th segment, original order)
-function parseSupportedGroupsFromJa3(ja3: string): number[] {
-  const parts = ja3.split(",");
-  if (parts.length < 4) return [];
-  return replaceGrease(
-    parts[3].split("-").map(Number).filter((n) => !isNaN(n)),
-  );
 }
 
 export function normalize(raw: Record<string, unknown>): NormalizedFingerprint {
   const tls = raw.tls as Record<string, unknown>;
-  const ja3 = raw.ja3 as string; // raw ja3 preserves original order
 
-  // Cipher suites from ja3 (original order, GREASE → sentinel)
-  const cipher_suites = parseCiphersFromJa3(ja3);
+  // --- Cipher suites from tls.ciphers ---
+  const rawCiphers = (tls.ciphers as string[]) ?? [];
+  const cipher_suites = replaceGrease(
+    rawCiphers.map(parseCipherId).filter((v): v is number => v !== null),
+  );
 
-  // Extensions from tls object (GREASE → sentinel).
-  // Chrome randomizes extension order each connection, but GREASE positions
-  // (first and/or last) are structural. Strategy: extract GREASE bookends,
-  // sort the non-GREASE middle, then re-attach bookends.
+  // --- Extensions from tls.extensions ---
   const rawExtensions = (tls.extensions as string[]) ?? [];
   const allExtIds = rawExtensions.map(parseExtensionId);
   const extensions = stabilizeExtensionOrder(allExtIds);
 
-  // Supported groups from ja3 (original order, GREASE → sentinel)
-  const supported_groups = parseSupportedGroupsFromJa3(ja3);
+  // --- Supported groups from tls.curves ---
+  const rawCurves = (tls.curves as string[]) ?? [];
+  const supported_groups = replaceGrease(
+    rawCurves.map(parseParenId).filter((v): v is number => v !== null),
+  );
 
-  // Supported versions from tls object (GREASE → sentinel)
+  // --- Supported versions (GREASE → sentinel) ---
   const supported_versions = replaceGrease(
     (tls.supported_tls_versions as number[]) ?? [],
   );
 
-  // Key share groups (GREASE → sentinel)
+  // --- Key share groups (GREASE → sentinel) ---
   const key_share_groups = replaceGrease(
     (tls.key_shares as number[]) ?? [],
   );
 
-  // Fields that are already stable
+  // --- Stable scalar fields ---
   const signature_algorithms = (tls.signature_algorithms as number[]) ?? [];
   const alpn = (tls.protocols as string[]) ?? [];
   const ec_point_formats = (tls.points as string[]) ?? [];
