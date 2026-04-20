@@ -3,7 +3,10 @@ import chrome from "selenium-webdriver/chrome.js";
 import firefox from "selenium-webdriver/firefox.js";
 import edge from "selenium-webdriver/edge.js";
 
-const REFLECTOR_URL = "https://tls.browserleaks.com/json";
+// Use the root endpoint (not /json) — it returns full tls object with
+// extension details (supported_versions, key_share, signature_algorithms).
+// The /json endpoint only returns ja3/ja4 summaries without these fields.
+const REFLECTOR_URL = "https://tls.browserleaks.com/";
 
 export interface BrowserConfig {
   name: string;

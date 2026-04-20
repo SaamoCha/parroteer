@@ -56,7 +56,7 @@ func capture(parrotName string) ([]byte, error) {
 
 	client := &http.Client{Transport: transport}
 
-	req, _ := http.NewRequest("GET", "https://"+host+"/json", nil)
+	req, _ := http.NewRequest("GET", "https://"+host+"/", nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		// HTTP/2 might fail for some parrots that don't negotiate h2, fall back to HTTP/1.1

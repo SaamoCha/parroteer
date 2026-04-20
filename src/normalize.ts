@@ -4,19 +4,14 @@
  *
  * GREASE handling: specific values (0x0A0A..0xFAFA) are replaced with
  * a sentinel (-1) to preserve their COUNT and POSITION while removing
- * the random value. This matters because censors can detect:
- *   - whether GREASE is present at all
- *   - how many GREASE values appear in each field
- *   - where they appear (e.g. Chrome wraps extensions with GREASE first+last)
+ * the random value.
  *
- * Parsing strategy: prefer `tls` sub-object (clienthellod reflectors) for
- * full detail including GREASE positions. Falls back to browserleaks flat
- * format (ja3_text + ja4_r) which covers cipher_suites, extensions, groups,
- * signature_algorithms, and ALPN but lacks GREASE positions, supported_versions,
- * and key_share_groups.
+ * Supports two response formats:
+ *   1. browserleaks.com root (/) — full tls object with {id, name, data}
+ *      extension details including supported_versions, key_share, sig_algs
+ *   2. Flat ja3_text-only responses — fallback parsing from ja3_text + ja4_r
  */
 
-// Sentinel value representing a GREASE slot in normalized output.
 export const GREASE_SENTINEL = -1;
 
 export interface NormalizedFingerprint {
@@ -42,74 +37,6 @@ function replaceGrease(values: number[]): number[] {
   return values.map((v) => (isGrease(v) ? GREASE_SENTINEL : v));
 }
 
-// Standard TLS cipher suite name → numeric ID mapping.
-// Only includes suites commonly seen in modern browsers.
-const CIPHER_NAME_TO_ID: Record<string, number> = {
-  TLS_AES_128_GCM_SHA256: 0x1301,
-  TLS_AES_256_GCM_SHA384: 0x1302,
-  TLS_CHACHA20_POLY1305_SHA256: 0x1303,
-  TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: 0xc02b,
-  TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256: 0xc02f,
-  TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384: 0xc02c,
-  TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384: 0xc030,
-  TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: 0xcca9,
-  TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: 0xcca8,
-  TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA: 0xc013,
-  TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA: 0xc014,
-  TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA: 0xc009,
-  TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA: 0xc00a,
-  TLS_RSA_WITH_AES_128_GCM_SHA256: 0x009c,
-  TLS_RSA_WITH_AES_256_GCM_SHA384: 0x009d,
-  TLS_RSA_WITH_AES_128_CBC_SHA: 0x002f,
-  TLS_RSA_WITH_AES_256_CBC_SHA: 0x0035,
-  TLS_RSA_WITH_AES_128_CBC_SHA256: 0x003c,
-  TLS_RSA_WITH_AES_256_CBC_SHA256: 0x003d,
-  TLS_RSA_WITH_3DES_EDE_CBC_SHA: 0x000a,
-  TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA: 0xc012,
-  TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384: 0xc024,
-  TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256: 0xc023,
-  TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256: 0xc027,
-  TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384: 0xc028,
-  TLS_DHE_RSA_WITH_AES_128_GCM_SHA256: 0x009e,
-  TLS_DHE_RSA_WITH_AES_256_GCM_SHA384: 0x009f,
-  TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256: 0xccaa,
-  TLS_DHE_RSA_WITH_AES_128_CBC_SHA: 0x0033,
-  TLS_DHE_RSA_WITH_AES_256_CBC_SHA: 0x0039,
-  TLS_EMPTY_RENEGOTIATION_INFO_SCSV: 0x00ff,
-  TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256_ALT: 0xc02b,
-};
-
-// Parse cipher name to numeric ID.
-// Handles: "0xNNNN" (hex, usually GREASE), named suites, unknown → skip.
-function parseCipherId(name: string): number | null {
-  // Hex format like "0x3A3A" — GREASE or other raw values
-  if (name.startsWith("0x")) {
-    const val = parseInt(name, 16);
-    return isNaN(val) ? null : val;
-  }
-  return CIPHER_NAME_TO_ID[name] ?? null;
-}
-
-// Parse numeric ID from parenthesized string like "X25519 (29)" or "TLS_GREASE (0x5A5A)"
-function parseParenId(s: string): number | null {
-  if (s.includes("GREASE") || s.includes("TLS_GREASE")) {
-    // Extract hex GREASE value
-    const hex = s.match(/0x([0-9A-Fa-f]+)/);
-    if (hex) return parseInt(hex[1], 16);
-    return null;
-  }
-  const match = s.match(/\((\d+)\)/);
-  return match ? Number(match[1]) : null;
-}
-
-// Parse extension ID from reflector string like "server_name (0) (IANA)"
-// or "GREASE (0xBABA)"
-function parseExtensionId(ext: string): number {
-  if (ext.startsWith("GREASE")) return GREASE_SENTINEL;
-  const match = ext.match(/\((\d+)\)/);
-  return match ? Number(match[1]) : -2;
-}
-
 // Chrome randomizes extension order each connection, but GREASE slots at
 // the boundaries are structural. Preserve leading/trailing GREASE sentinels,
 // sort the non-GREASE interior so the result is stable across captures.
@@ -132,9 +59,8 @@ function stabilizeExtensionOrder(extIds: number[]): number[] {
   return [...leading, ...middle, ...trailing];
 }
 
-// Parse ja3_text segment into numeric IDs with GREASE replacement.
-// ja3_text format: TLSVersion,CipherSuites,Extensions,EllipticCurves,PointFormats
-// Each segment is dash-separated numeric IDs.
+// ─── ja3/ja4 fallback parsers ───────────────────────────────────────────
+
 function parseJa3Segment(ja3: string, index: number): number[] {
   const parts = ja3.split(",");
   if (parts.length <= index || !parts[index]) return [];
@@ -143,9 +69,6 @@ function parseJa3Segment(ja3: string, index: number): number[] {
   );
 }
 
-// Parse signature algorithms from ja4_r.
-// ja4_r format: {prefix}_{ciphers_hex}_{extensions_hex}_{sig_algs_hex}
-// sig_algs are comma-separated 4-char hex values like "0403,0804,0401"
 function parseSigAlgsFromJa4r(ja4r: string): number[] {
   const segments = ja4r.split("_");
   if (segments.length < 4 || !segments[3]) return [];
@@ -155,81 +78,105 @@ function parseSigAlgsFromJa4r(ja4r: string): number[] {
     .filter((n) => !isNaN(n));
 }
 
-// Parse ALPN from ja4 prefix.
-// ja4 format: t{ver}d{nc}{ne}{alpn}_{hash}_{hash}
-// alpn portion: "h2" = HTTP/2, "h1" = HTTP/1.1, "00" = no ALPN
 function parseAlpnFromJa4(ja4: string): string[] {
   const prefix = ja4.split("_")[0] ?? "";
-  // Last 2 chars of prefix are the ALPN code
   const alpnCode = prefix.slice(-2);
   if (alpnCode === "h2") return ["h2", "http/1.1"];
   if (alpnCode === "h1") return ["http/1.1"];
   return [];
 }
 
-export function normalize(raw: Record<string, unknown>): NormalizedFingerprint {
-  const tls = (raw.tls ?? {}) as Record<string, unknown>;
-  // ja3_text (browserleaks format) or ja3 (clienthellod format)
-  const ja3 = (raw.ja3_text ?? raw.ja3 ?? "") as string;
-  const ja4 = (raw.ja4 ?? "") as string;
-  const ja4r = (raw.ja4_r ?? raw.ja4_ro ?? "") as string;
+// ─── browserleaks root format parsers ───────────────────────────────────
+// tls.cipher_suites: [{id, name}, ...]
+// tls.extensions:    [{id, name, data?}, ...]
+//   - ext 10 (supported_groups): data.named_group_list [{id, name}, ...]
+//   - ext 13 (signature_algorithms): data.supported_signature_algorithms [{id, name}, ...]
+//   - ext 16 (alpn): data.protocol_name_list [{protocol}, ...]
+//   - ext 43 (supported_versions): data.versions [{id, name}, ...]
+//   - ext 51 (key_share): data.client_shares [{group: {id, name}}, ...]
+//   - ext 11 (ec_point_formats): data.ec_point_format_list [{id, name}, ...]
+//   - ext 45 (psk_key_exchange_modes): data.ke_modes [{id, name}, ...]
 
-  // --- Cipher suites ---
-  // Prefer tls.ciphers (has GREASE position info).
-  // Fall back to ja3_text which has numeric IDs but strips GREASE.
-  const rawCiphers = (tls.ciphers as string[]) ?? [];
-  const cipher_suites = rawCiphers.length > 0
-    ? replaceGrease(rawCiphers.map(parseCipherId).filter((v): v is number => v !== null))
-    : parseJa3Segment(ja3, 1);
+interface IdName { id: number; name: string }
+interface ExtObj { id: number; name: string; data?: Record<string, unknown> }
 
-  // --- Extensions ---
-  const rawExtensions = (tls.extensions as string[]) ?? [];
-  const extensions = rawExtensions.length > 0
-    ? stabilizeExtensionOrder(rawExtensions.map(parseExtensionId))
-    : parseJa3Segment(ja3, 2).sort((a, b) => a - b);
+function findExt(exts: ExtObj[], id: number): ExtObj | undefined {
+  return exts.find((e) => e.id === id);
+}
 
-  // --- Supported groups ---
-  const rawCurves = (tls.curves as string[]) ?? [];
-  const supported_groups = rawCurves.length > 0
-    ? replaceGrease(rawCurves.map(parseParenId).filter((v): v is number => v !== null))
-    : parseJa3Segment(ja3, 3);
+function extractIdList(arr: unknown): number[] {
+  if (!Array.isArray(arr)) return [];
+  return (arr as IdName[]).map((item) => item.id).filter((n) => typeof n === "number");
+}
 
-  // --- Supported versions (GREASE → sentinel) ---
-  // tls object has these; ja3_text's first segment is just the record version (771),
-  // not the supported_versions extension. No fallback available from browserleaks.
-  const supported_versions = replaceGrease(
-    (tls.supported_tls_versions as number[]) ?? [],
-  );
+function parseBrowserleaksTls(tls: Record<string, unknown>): {
+  cipher_suites: number[];
+  extensions: number[];
+  supported_groups: number[];
+  supported_versions: number[];
+  key_share_groups: number[];
+  signature_algorithms: number[];
+  alpn: string[];
+  ec_point_formats: string[];
+  psk_key_exchange_mode: string;
+} {
+  const rawCiphers = (tls.cipher_suites as IdName[]) ?? [];
+  const cipher_suites = replaceGrease(rawCiphers.map((c) => c.id));
 
-  // --- Key share groups (GREASE → sentinel) ---
-  // Only available from tls object. No fallback from browserleaks.
-  const key_share_groups = replaceGrease(
-    (tls.key_shares as number[]) ?? [],
-  );
+  const rawExts = (tls.extensions as ExtObj[]) ?? [];
+  const extIds = replaceGrease(rawExts.map((e) => e.id));
+  const extensions = stabilizeExtensionOrder(extIds);
 
-  // --- Signature algorithms ---
-  // Prefer tls object, fall back to ja4_r third segment (hex values).
-  const tlsSigAlgs = (tls.signature_algorithms as number[]) ?? [];
-  const signature_algorithms = tlsSigAlgs.length > 0
-    ? tlsSigAlgs
-    : parseSigAlgsFromJa4r(ja4r);
+  // supported_groups from ext 10
+  const groupsExt = findExt(rawExts, 10);
+  const supported_groups = groupsExt?.data
+    ? replaceGrease(extractIdList(groupsExt.data.named_group_list))
+    : [];
 
-  // --- ALPN ---
-  // Prefer tls object, fall back to ja4 prefix.
-  const tlsAlpn = (tls.protocols as string[]) ?? [];
-  const alpn = tlsAlpn.length > 0 ? tlsAlpn : parseAlpnFromJa4(ja4);
+  // supported_versions from ext 43
+  const versionsExt = findExt(rawExts, 43);
+  const supported_versions = versionsExt?.data
+    ? replaceGrease(extractIdList(versionsExt.data.versions))
+    : [];
 
-  // --- Point formats from ja3_text 5th segment ---
-  const tlsPoints = (tls.points as string[]) ?? [];
-  const ec_point_formats = tlsPoints.length > 0
-    ? tlsPoints
-    : parseJa3Segment(ja3, 4).map(String);
+  // key_share from ext 51
+  const keyShareExt = findExt(rawExts, 51);
+  let key_share_groups: number[] = [];
+  if (keyShareExt?.data && Array.isArray(keyShareExt.data.client_shares)) {
+    key_share_groups = replaceGrease(
+      (keyShareExt.data.client_shares as { group: IdName }[])
+        .map((s) => s.group?.id)
+        .filter((n): n is number => typeof n === "number"),
+    );
+  }
 
-  // --- Scalar fields (only from tls object, no fallback) ---
-  const psk_key_exchange_mode = (tls.psk_key_exchange_mode as string) ?? "";
-  const cert_compression_algorithms =
-    (tls.cert_compression_algorithms as string) ?? "";
-  const early_data = (tls.early_data as boolean) ?? false;
+  // signature_algorithms from ext 13
+  const sigAlgExt = findExt(rawExts, 13);
+  const signature_algorithms = sigAlgExt?.data
+    ? extractIdList(sigAlgExt.data.supported_signature_algorithms)
+    : [];
+
+  // ALPN from ext 16 — protocol_name_list is an array of strings
+  const alpnExt = findExt(rawExts, 16);
+  let alpn: string[] = [];
+  if (alpnExt?.data && Array.isArray(alpnExt.data.protocol_name_list)) {
+    alpn = (alpnExt.data.protocol_name_list as string[]).filter(Boolean);
+  }
+
+  // ec_point_formats from ext 11
+  const pointsExt = findExt(rawExts, 11);
+  const ec_point_formats = pointsExt?.data
+    ? extractIdList(pointsExt.data.ec_point_format_list).map(String)
+    : [];
+
+  // psk_key_exchange_modes from ext 45
+  const pskExt = findExt(rawExts, 45);
+  let psk_key_exchange_mode = "";
+  if (pskExt?.data && Array.isArray(pskExt.data.ke_modes)) {
+    psk_key_exchange_mode = (pskExt.data.ke_modes as IdName[])
+      .map((m) => m.id)
+      .join(",");
+  }
 
   return {
     cipher_suites,
@@ -241,8 +188,40 @@ export function normalize(raw: Record<string, unknown>): NormalizedFingerprint {
     alpn,
     ec_point_formats,
     psk_key_exchange_mode,
-    cert_compression_algorithms,
-    early_data,
+  };
+}
+
+// ─── Main normalize function ────────────────────────────────────────────
+
+export function normalize(raw: Record<string, unknown>): NormalizedFingerprint {
+  const tls = (raw.tls ?? null) as Record<string, unknown> | null;
+  const ja3 = (raw.ja3_text ?? raw.ja3 ?? "") as string;
+  const ja4 = (raw.ja4 ?? "") as string;
+  const ja4r = (raw.ja4_r ?? raw.ja4_ro ?? "") as string;
+
+  // If tls object has extensions array (browserleaks root format), use full parser
+  if (tls && Array.isArray(tls.extensions) && tls.extensions.length > 0) {
+    const parsed = parseBrowserleaksTls(tls);
+    return {
+      ...parsed,
+      cert_compression_algorithms: "",
+      early_data: false,
+    };
+  }
+
+  // Fallback: parse from ja3_text + ja4_r (flat format or /json endpoint)
+  return {
+    cipher_suites: parseJa3Segment(ja3, 1),
+    extensions: parseJa3Segment(ja3, 2).sort((a, b) => a - b),
+    supported_groups: parseJa3Segment(ja3, 3),
+    supported_versions: [],
+    key_share_groups: [],
+    signature_algorithms: parseSigAlgsFromJa4r(ja4r),
+    alpn: parseAlpnFromJa4(ja4),
+    ec_point_formats: parseJa3Segment(ja3, 4).map(String),
+    psk_key_exchange_mode: "",
+    cert_compression_algorithms: "",
+    early_data: false,
   };
 }
 
