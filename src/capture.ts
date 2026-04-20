@@ -2,6 +2,7 @@ import { Builder, By } from "selenium-webdriver";
 import chrome from "selenium-webdriver/chrome.js";
 import firefox from "selenium-webdriver/firefox.js";
 import edge from "selenium-webdriver/edge.js";
+import safari from "selenium-webdriver/safari.js";
 
 // Use the root endpoint (not /json) — it returns full tls object with
 // extension details (supported_versions, key_share, signature_algorithms).
@@ -10,7 +11,7 @@ const REFLECTOR_URL = "https://tls.browserleaks.com/";
 
 export interface BrowserConfig {
   name: string;
-  type: "chrome" | "firefox" | "edge";
+  type: "chrome" | "firefox" | "edge" | "safari";
   binaryPath: string;
 }
 
@@ -26,6 +27,7 @@ export const BROWSERS: BrowserConfig[] = resolveBrowserPaths([
     "/snap/firefox/current/usr/lib/firefox/firefox",
   ]},
   { name: "firefox-nightly", type: "firefox", candidates: ["/opt/firefox-nightly/firefox"] },
+  { name: "safari-stable", type: "safari", candidates: ["/usr/bin/safaridriver"] },
 ]);
 
 function resolveBrowserPaths(
@@ -53,13 +55,17 @@ export async function capture(browser: BrowserConfig): Promise<Record<string, un
     options.addArguments("--headless=new");
     options.setEdgeChromiumBinaryPath(browser.binaryPath);
     driver = await new Builder().forBrowser("MicrosoftEdge").setEdgeOptions(options).build();
-  } else {
+  } else if (browser.type === "firefox") {
     const options = new firefox.Options();
     options.addArguments("-headless");
     options.setBinary(browser.binaryPath);
     // Disable Firefox's built-in JSON viewer so we get raw JSON text
     options.setPreference("devtools.jsonview.enabled", false);
     driver = await new Builder().forBrowser("firefox").setFirefoxOptions(options).build();
+  } else {
+    // Safari — no headless mode, no binary path needed (system Safari)
+    const options = new safari.Options();
+    driver = await new Builder().forBrowser("safari").setSafariOptions(options).build();
   }
 
   try {

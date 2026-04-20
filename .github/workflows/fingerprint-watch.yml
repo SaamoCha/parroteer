@@ -24,7 +24,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  capture:
+  # ── Linux: Chrome, Edge, Firefox ──────────────────────────────────────
+  linux:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -50,7 +51,6 @@ jobs:
         run: |
           go get github.com/refraction-networking/utls@main
           go mod tidy
-          # Show which version we're testing against
           grep utls go.sum | head -1
 
       - name: Run fingerprint capture
@@ -66,7 +66,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Commit baseline and dependency updates
+      - name: Commit updates
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -82,7 +82,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: raw-captures-${{ github.run_id }}
+          name: raw-captures-linux-${{ github.run_id }}
           path: fixtures/captures/
           retention-days: 30
           if-no-files-found: ignore
@@ -91,7 +91,79 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fingerprint-report-${{ github.run_id }}
+          name: fingerprint-report-linux-${{ github.run_id }}
+          path: reports/
+          retention-days: 90
+          if-no-files-found: ignore
+
+  # ── macOS: Safari ─────────────────────────────────────────────────────
+  safari:
+    runs-on: macos-15
+    timeout-minutes: 15
+    needs: linux  # run after linux so git pushes don't conflict
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main  # pull latest (linux job may have pushed)
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Enable SafariDriver
+        run: sudo safaridriver --enable
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Update utls to latest commit
+        run: |
+          go get github.com/refraction-networking/utls@main
+          go mod tidy
+
+      - name: Run Safari fingerprint capture
+        run: |
+          ARGS="--browser safari-stable"
+          if [ "${{ inputs.notify }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+            ARGS="$ARGS --notify"
+          fi
+          npx tsx src/run.ts $ARGS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit updates
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
+          git add fixtures/baselines/ fixtures/known-diffs/
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update Safari fingerprint baseline [skip ci]"
+            git push
+          fi
+
+      - name: Upload raw captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-captures-safari-${{ github.run_id }}
+          path: fixtures/captures/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fingerprint-report-safari-${{ github.run_id }}
           path: reports/
           retention-days: 90
           if-no-files-found: ignore

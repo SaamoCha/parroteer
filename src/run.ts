@@ -15,6 +15,7 @@ const UTLS_PARROT_MAP: Record<string, string> = {
   chrome: "chrome",
   edge: "edge",
   firefox: "firefox",
+  safari: "safari",
 };
 
 interface Baseline {
