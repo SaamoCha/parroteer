@@ -131,25 +131,41 @@ function stabilizeExtensionOrder(extIds: number[]): number[] {
   return [...leading, ...middle, ...trailing];
 }
 
+// Parse ja3_text segment into numeric IDs with GREASE replacement.
+// ja3_text format: TLSVersion,CipherSuites,Extensions,EllipticCurves,PointFormats
+// Each segment is dash-separated numeric IDs.
+function parseJa3Segment(ja3: string, index: number): number[] {
+  const parts = ja3.split(",");
+  if (parts.length <= index || !parts[index]) return [];
+  return replaceGrease(
+    parts[index].split("-").map(Number).filter((n) => !isNaN(n)),
+  );
+}
+
 export function normalize(raw: Record<string, unknown>): NormalizedFingerprint {
-  const tls = raw.tls as Record<string, unknown>;
+  const tls = (raw.tls ?? {}) as Record<string, unknown>;
+  // ja3_text (utls-capture format) or ja3 (browser reflector format)
+  const ja3 = (raw.ja3_text ?? raw.ja3 ?? "") as string;
 
-  // --- Cipher suites from tls.ciphers ---
+  // --- Cipher suites ---
+  // Prefer tls.ciphers (has GREASE position info from browser capture).
+  // Fall back to ja3_text for utls-capture which lacks tls object.
   const rawCiphers = (tls.ciphers as string[]) ?? [];
-  const cipher_suites = replaceGrease(
-    rawCiphers.map(parseCipherId).filter((v): v is number => v !== null),
-  );
+  const cipher_suites = rawCiphers.length > 0
+    ? replaceGrease(rawCiphers.map(parseCipherId).filter((v): v is number => v !== null))
+    : parseJa3Segment(ja3, 1);
 
-  // --- Extensions from tls.extensions ---
+  // --- Extensions ---
   const rawExtensions = (tls.extensions as string[]) ?? [];
-  const allExtIds = rawExtensions.map(parseExtensionId);
-  const extensions = stabilizeExtensionOrder(allExtIds);
+  const extensions = rawExtensions.length > 0
+    ? stabilizeExtensionOrder(rawExtensions.map(parseExtensionId))
+    : parseJa3Segment(ja3, 2).sort((a, b) => a - b); // ja3 ext order is random, sort
 
-  // --- Supported groups from tls.curves ---
+  // --- Supported groups ---
   const rawCurves = (tls.curves as string[]) ?? [];
-  const supported_groups = replaceGrease(
-    rawCurves.map(parseParenId).filter((v): v is number => v !== null),
-  );
+  const supported_groups = rawCurves.length > 0
+    ? replaceGrease(rawCurves.map(parseParenId).filter((v): v is number => v !== null))
+    : parseJa3Segment(ja3, 3);
 
   // --- Supported versions (GREASE → sentinel) ---
   const supported_versions = replaceGrease(
