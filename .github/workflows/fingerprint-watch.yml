@@ -49,7 +49,7 @@ jobs:
 
       - name: Update utls to latest commit
         run: |
-          go get github.com/refraction-networking/utls@main
+          go get github.com/refraction-networking/utls@master
           go mod tidy
           grep utls go.sum | head -1
 
@@ -124,7 +124,7 @@ jobs:
 
       - name: Update utls to latest commit
         run: |
-          go get github.com/refraction-networking/utls@main
+          go get github.com/refraction-networking/utls@master
           go mod tidy
 
       - name: Run Safari fingerprint capture
