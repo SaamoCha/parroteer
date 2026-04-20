@@ -9,10 +9,11 @@
  *   - how many GREASE values appear in each field
  *   - where they appear (e.g. Chrome wraps extensions with GREASE first+last)
  *
- * Parsing strategy: extract all fields from the `tls` sub-object (always
- * present in reflector responses). Does NOT depend on `ja3`, `ja3n`, or
- * `scrapfly_fp` — those may be absent for non-browser TLS clients (e.g.
- * utls-capture).
+ * Parsing strategy: prefer `tls` sub-object (clienthellod reflectors) for
+ * full detail including GREASE positions. Falls back to browserleaks flat
+ * format (ja3_text + ja4_r) which covers cipher_suites, extensions, groups,
+ * signature_algorithms, and ALPN but lacks GREASE positions, supported_versions,
+ * and key_share_groups.
  */
 
 // Sentinel value representing a GREASE slot in normalized output.
@@ -142,14 +143,40 @@ function parseJa3Segment(ja3: string, index: number): number[] {
   );
 }
 
+// Parse signature algorithms from ja4_r.
+// ja4_r format: {prefix}_{ciphers_hex}_{extensions_hex}_{sig_algs_hex}
+// sig_algs are comma-separated 4-char hex values like "0403,0804,0401"
+function parseSigAlgsFromJa4r(ja4r: string): number[] {
+  const segments = ja4r.split("_");
+  if (segments.length < 4 || !segments[3]) return [];
+  return segments[3]
+    .split(",")
+    .map((hex) => parseInt(hex, 16))
+    .filter((n) => !isNaN(n));
+}
+
+// Parse ALPN from ja4 prefix.
+// ja4 format: t{ver}d{nc}{ne}{alpn}_{hash}_{hash}
+// alpn portion: "h2" = HTTP/2, "h1" = HTTP/1.1, "00" = no ALPN
+function parseAlpnFromJa4(ja4: string): string[] {
+  const prefix = ja4.split("_")[0] ?? "";
+  // Last 2 chars of prefix are the ALPN code
+  const alpnCode = prefix.slice(-2);
+  if (alpnCode === "h2") return ["h2", "http/1.1"];
+  if (alpnCode === "h1") return ["http/1.1"];
+  return [];
+}
+
 export function normalize(raw: Record<string, unknown>): NormalizedFingerprint {
   const tls = (raw.tls ?? {}) as Record<string, unknown>;
-  // ja3_text (utls-capture format) or ja3 (browser reflector format)
+  // ja3_text (browserleaks format) or ja3 (clienthellod format)
   const ja3 = (raw.ja3_text ?? raw.ja3 ?? "") as string;
+  const ja4 = (raw.ja4 ?? "") as string;
+  const ja4r = (raw.ja4_r ?? raw.ja4_ro ?? "") as string;
 
   // --- Cipher suites ---
-  // Prefer tls.ciphers (has GREASE position info from browser capture).
-  // Fall back to ja3_text for utls-capture which lacks tls object.
+  // Prefer tls.ciphers (has GREASE position info).
+  // Fall back to ja3_text which has numeric IDs but strips GREASE.
   const rawCiphers = (tls.ciphers as string[]) ?? [];
   const cipher_suites = rawCiphers.length > 0
     ? replaceGrease(rawCiphers.map(parseCipherId).filter((v): v is number => v !== null))
@@ -159,7 +186,7 @@ export function normalize(raw: Record<string, unknown>): NormalizedFingerprint {
   const rawExtensions = (tls.extensions as string[]) ?? [];
   const extensions = rawExtensions.length > 0
     ? stabilizeExtensionOrder(rawExtensions.map(parseExtensionId))
-    : parseJa3Segment(ja3, 2).sort((a, b) => a - b); // ja3 ext order is random, sort
+    : parseJa3Segment(ja3, 2).sort((a, b) => a - b);
 
   // --- Supported groups ---
   const rawCurves = (tls.curves as string[]) ?? [];
@@ -168,19 +195,37 @@ export function normalize(raw: Record<string, unknown>): NormalizedFingerprint {
     : parseJa3Segment(ja3, 3);
 
   // --- Supported versions (GREASE → sentinel) ---
+  // tls object has these; ja3_text's first segment is just the record version (771),
+  // not the supported_versions extension. No fallback available from browserleaks.
   const supported_versions = replaceGrease(
     (tls.supported_tls_versions as number[]) ?? [],
   );
 
   // --- Key share groups (GREASE → sentinel) ---
+  // Only available from tls object. No fallback from browserleaks.
   const key_share_groups = replaceGrease(
     (tls.key_shares as number[]) ?? [],
   );
 
-  // --- Stable scalar fields ---
-  const signature_algorithms = (tls.signature_algorithms as number[]) ?? [];
-  const alpn = (tls.protocols as string[]) ?? [];
-  const ec_point_formats = (tls.points as string[]) ?? [];
+  // --- Signature algorithms ---
+  // Prefer tls object, fall back to ja4_r third segment (hex values).
+  const tlsSigAlgs = (tls.signature_algorithms as number[]) ?? [];
+  const signature_algorithms = tlsSigAlgs.length > 0
+    ? tlsSigAlgs
+    : parseSigAlgsFromJa4r(ja4r);
+
+  // --- ALPN ---
+  // Prefer tls object, fall back to ja4 prefix.
+  const tlsAlpn = (tls.protocols as string[]) ?? [];
+  const alpn = tlsAlpn.length > 0 ? tlsAlpn : parseAlpnFromJa4(ja4);
+
+  // --- Point formats from ja3_text 5th segment ---
+  const tlsPoints = (tls.points as string[]) ?? [];
+  const ec_point_formats = tlsPoints.length > 0
+    ? tlsPoints
+    : parseJa3Segment(ja3, 4).map(String);
+
+  // --- Scalar fields (only from tls object, no fallback) ---
   const psk_key_exchange_mode = (tls.psk_key_exchange_mode as string) ?? "";
   const cert_compression_algorithms =
     (tls.cert_compression_algorithms as string) ?? "";
