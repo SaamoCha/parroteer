@@ -1,4 +1,5 @@
 {
+    debug
     order clienthellod before file_server
     clienthellod {
         tls_ttl 10s
@@ -15,9 +16,11 @@
     }
 }
 
-# Replace with your domain
-{$REFLECTOR_DOMAIN:reflect.example.com} {
-    # TLS fingerprint endpoint
+:80 {
+    respond "parroteer-reflector" 200
+}
+
+reflect.example.com {
     clienthellod {
         tls
     }
