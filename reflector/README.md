@@ -7,7 +7,7 @@ reflector for TLS and QUIC fingerprint capture. Deployed on Fly.io.
 
 ### 1. Get a domain
 
-Point a domain (e.g., `reflect.yourdomain.com`) to the Fly.io app.
+Point a domain (e.g., `reflect.matseoi.com`) to the Fly.io app.
 You'll set this after the first deploy when you know the IP.
 
 ### 2. Deploy
@@ -22,7 +22,7 @@ cd reflector
 fly launch --no-deploy
 
 # Set your domain
-fly secrets set REFLECTOR_DOMAIN=reflect.yourdomain.com
+fly secrets set REFLECTOR_DOMAIN=reflect.matseoi.com
 
 # Deploy
 fly deploy
@@ -35,8 +35,8 @@ fly ips list
 
 Point your domain to the Fly.io IPs:
 ```
-reflect.yourdomain.com  A     <ipv4 from fly ips list>
-reflect.yourdomain.com  AAAA  <ipv6 from fly ips list>
+reflect.matseoi.com  A     <ipv4 from fly ips list>
+reflect.matseoi.com  AAAA  <ipv6 from fly ips list>
 ```
 
 Caddy will automatically get a Let's Encrypt certificate on first request.
@@ -45,7 +45,7 @@ Caddy will automatically get a Let's Encrypt certificate on first request.
 
 ```bash
 # TLS fingerprint
-curl https://reflect.yourdomain.com/
+curl https://reflect.matseoi.com/
 
 # Should return JSON with tls object including cipher_suites, extensions, etc.
 ```
@@ -66,5 +66,5 @@ Set `REFLECTOR_URL` environment variable in the CI workflow:
 
 ```yaml
 env:
-  REFLECTOR_URL: "https://reflect.yourdomain.com/"
+  REFLECTOR_URL: "https://reflect.matseoi.com/"
 ```

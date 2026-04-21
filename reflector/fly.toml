@@ -1,29 +1,39 @@
-app = "parroteer-reflector"
-primary_region = "iad"  # US East (close to GitHub Actions runners)
+# fly.toml app configuration file generated for parroteer-reflector on 2026-04-20T23:20:23-04:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'parroteer-reflector'
+primary_region = 'iad'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  REFLECTOR_DOMAIN = "reflect.example.com"  # ← change this
+  REFLECTOR_DOMAIN = 'reflect.matseoi.com'
 
-# Port 80: ACME HTTP-01 challenge (Caddy auto-redirect to HTTPS)
 [[services]]
+  protocol = 'tcp'
   internal_port = 80
-  protocol = "tcp"
+
   [[services.ports]]
     port = 80
 
-# Port 443 TCP: raw passthrough — Caddy terminates TLS, clienthellod sees ClientHello
 [[services]]
+  protocol = 'tcp'
   internal_port = 443
-  protocol = "tcp"
+
   [[services.ports]]
     port = 443
 
-# Port 443 UDP: raw passthrough — Caddy handles QUIC, clienthellod sees Initial Packet
 [[services]]
+  protocol = 'udp'
   internal_port = 443
-  protocol = "udp"
+
   [[services.ports]]
     port = 443
+
+[[vm]]
+  memory = '256mb'
+  cpus = 1
+  memory_mb = 256
