@@ -9,8 +9,6 @@ primary_region = 'iad'
 [build]
   dockerfile = 'Dockerfile'
 
-[env]
-  REFLECTOR_DOMAIN = 'reflect.matseoi.com'
 
 [[services]]
   protocol = 'tcp'
