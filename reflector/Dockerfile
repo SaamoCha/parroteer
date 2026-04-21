@@ -1,9 +1,10 @@
-# Build xcaddy with clienthellod module
+# Build xcaddy with clienthellod + cloudflare DNS modules
 FROM golang:1.26-bookworm AS builder
 
 RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 RUN xcaddy build \
-    --with github.com/gaukas/clienthellod/modcaddy@master
+    --with github.com/gaukas/clienthellod/modcaddy@master \
+    --with github.com/caddy-dns/cloudflare
 
 # Runtime
 FROM debian:bookworm-slim
