@@ -8,6 +8,7 @@ import { diffFingerprints, formatReport, formatUtlsComparison, type DiffResult }
 const BASELINES_DIR = path.resolve("fixtures/baselines");
 const KNOWN_DIFFS_DIR = path.resolve("fixtures/known-diffs");
 const CAPTURES_DIR = path.resolve("fixtures/captures");
+const SPECS_DIR = path.resolve("fixtures/specs");
 const REPORTS_DIR = path.resolve("reports");
 
 // Map browser type to utls parrot name
@@ -23,8 +24,6 @@ interface Baseline {
   captured_at: string;
 }
 
-// A known-diff records the last seen utls-vs-browser diff result.
-// If the current diff matches, we skip notification.
 interface KnownDiff {
   diff_hash: string;
   recorded_at: string;
@@ -44,9 +43,6 @@ function saveBaseline(browserName: string, fp: NormalizedFingerprint): void {
   fs.writeFileSync(path.join(BASELINES_DIR, `${browserName}.json`), JSON.stringify(baseline, null, 2) + "\n");
 }
 
-// Compute a stable hash of a DiffResult for comparison.
-// We stringify the diffs array — if the same fields differ in the same way,
-// the hash will be identical, preventing duplicate notifications.
 function hashDiff(diff: DiffResult): string {
   if (!diff.hasChanges) return "match";
   const key = diff.diffs
@@ -68,10 +64,11 @@ function saveKnownDiff(label: string, diffHash: string): void {
   fs.writeFileSync(path.join(KNOWN_DIFFS_DIR, `${label}.json`), JSON.stringify(known, null, 2) + "\n");
 }
 
-function saveRawCapture(name: string, data: Record<string, unknown>): void {
+function saveRawCapture(name: string, data: Record<string, unknown>): string {
   fs.mkdirSync(CAPTURES_DIR, { recursive: true });
   const file = path.join(CAPTURES_DIR, `${name}-${new Date().toISOString().slice(0, 10)}.json`);
   fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
+  return file;
 }
 
 function captureUtls(parrotName: string): Record<string, unknown> | null {
@@ -86,6 +83,50 @@ function captureUtls(parrotName: string): Record<string, unknown> | null {
   } catch (err) {
     console.error(`  utls ${parrotName} capture failed: ${(err as Error).message}`);
     return null;
+  }
+}
+
+// Generate a utls spec JSON from a raw capture file, then replay-verify it.
+// Returns { specPath, verified } or null on failure.
+function generateAndVerifySpec(
+  browserName: string,
+  captureFile: string,
+): { specPath: string; specJSON: string; verified: boolean } | null {
+  fs.mkdirSync(SPECS_DIR, { recursive: true });
+  const specFile = path.join(SPECS_DIR, `${browserName}-spec.json`);
+
+  // Phase 2.1: generate spec
+  try {
+    execSync(`go run cmd/gen-spec/main.go ${captureFile} ${specFile}`, {
+      timeout: 30000,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (err) {
+    console.error(`    gen-spec failed: ${(err as Error).message}`);
+    return null;
+  }
+
+  const specJSON = fs.readFileSync(specFile, "utf8");
+
+  // Phase 2.2: replay-verify
+  try {
+    const out = execSync(`go run cmd/replay-verify/main.go ${specFile} ${captureFile}`, {
+      timeout: 30000,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const verified = out.includes("MATCH");
+    return { specPath: specFile, specJSON, verified };
+  } catch (err) {
+    // Exit code 1 = mismatch, exit code 2 = error
+    const output = (err as { stdout?: string }).stdout ?? "";
+    if (output.includes("MISMATCH")) {
+      console.error(`    replay-verify: MISMATCH`);
+      return { specPath: specFile, specJSON, verified: false };
+    }
+    console.error(`    replay-verify failed: ${(err as Error).message}`);
+    return { specPath: specFile, specJSON, verified: false };
   }
 }
 
@@ -138,7 +179,7 @@ async function main() {
       continue;
     }
 
-    saveRawCapture(browser.name, result);
+    const captureFile = saveRawCapture(browser.name, result);
     const hasTls = !!result.tls;
     console.log(`  response keys: [${Object.keys(result).join(", ")}]`);
     console.log(`  has tls object: ${hasTls}`);
@@ -186,10 +227,22 @@ async function main() {
           anyNewChange = true;
           saveKnownDiff(`${browser.name}-vs-utls-${parrotName}`, diffHash);
         }
+
+        // Generate and verify a corrected spec from the real browser capture
+        console.log(`  Generating spec from real ${browser.name} capture...`);
+        const specResult = generateAndVerifySpec(browser.name, captureFile);
+        if (specResult) {
+          const status = specResult.verified ? "MATCH" : "MISMATCH";
+          console.log(`  Replay verification: ${status}`);
+          const statusEmoji = specResult.verified ? "Replay verified" : "Replay MISMATCH — review manually";
+          reports.push(
+            `### ${browser.name} — Generated Spec (${statusEmoji})\n\n` +
+            "```json\n" + specResult.specJSON + "\n```\n",
+          );
+        }
       } else {
         console.log(`  utls ${parrotName} parrot matches.`);
         reports.push(formatUtlsComparison(label, fp, utlsFp, utlsDiff));
-        // Clear known diff if parrot now matches
         if (knownDiff) {
           saveKnownDiff(`${browser.name}-vs-utls-${parrotName}`, "match");
         }
