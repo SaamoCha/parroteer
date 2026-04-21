@@ -1,5 +1,5 @@
 # Build xcaddy with clienthellod module
-FROM golang:1.23-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
 
 RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 RUN xcaddy build \
