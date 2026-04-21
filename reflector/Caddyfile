@@ -16,11 +16,10 @@
     }
 }
 
-:80 {
-    respond "parroteer-reflector" 200
-}
-
 reflect.example.com {
+    tls {
+        dns cloudflare {env.CF_API_TOKEN}
+    }
     clienthellod {
         tls
     }
