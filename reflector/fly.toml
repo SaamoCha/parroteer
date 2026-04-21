@@ -1,0 +1,29 @@
+app = "parroteer-reflector"
+primary_region = "iad"  # US East (close to GitHub Actions runners)
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  REFLECTOR_DOMAIN = "reflect.example.com"  # ← change this
+
+# Port 80: ACME HTTP-01 challenge (Caddy auto-redirect to HTTPS)
+[[services]]
+  internal_port = 80
+  protocol = "tcp"
+  [[services.ports]]
+    port = 80
+
+# Port 443 TCP: raw passthrough — Caddy terminates TLS, clienthellod sees ClientHello
+[[services]]
+  internal_port = 443
+  protocol = "tcp"
+  [[services.ports]]
+    port = 443
+
+# Port 443 UDP: raw passthrough — Caddy handles QUIC, clienthellod sees Initial Packet
+[[services]]
+  internal_port = 443
+  protocol = "udp"
+  [[services.ports]]
+    port = 443

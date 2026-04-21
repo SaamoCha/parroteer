@@ -1,0 +1,25 @@
+{
+    order clienthellod before file_server
+    clienthellod {
+        tls_ttl 10s
+        quic_ttl 60s
+    }
+    servers {
+        listener_wrappers {
+            clienthellod {
+                tcp
+                udp
+            }
+            tls
+        }
+    }
+}
+
+# Replace with your domain
+{$REFLECTOR_DOMAIN:reflect.example.com} {
+    # TLS fingerprint endpoint
+    clienthellod {
+        tls
+    }
+    header Connection close
+}
