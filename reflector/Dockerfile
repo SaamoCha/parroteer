@@ -3,7 +3,7 @@ FROM golang:1.26-bookworm AS builder
 
 RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 RUN xcaddy build \
-    --with github.com/gaukas/clienthellod/modcaddy
+    --with github.com/gaukas/clienthellod/modcaddy@master
 
 # Runtime
 FROM debian:bookworm-slim
