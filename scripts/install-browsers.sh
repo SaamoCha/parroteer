@@ -27,13 +27,16 @@ microsoft-edge-stable --version
 
 echo "=== Installing Firefox Stable (direct from Mozilla) ==="
 # Download latest stable directly from Mozilla — faster than waiting for apt
+# Mozilla now ships .tar.xz (was .tar.bz2), use --compressed and auto-detect
 curl -sL "https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=en-US" \
-  -o /tmp/firefox.tar.bz2
+  -o /tmp/firefox.tar
 sudo rm -rf /opt/firefox-stable
-sudo tar -xjf /tmp/firefox.tar.bz2 -C /opt/
+sudo tar -xf /tmp/firefox.tar -C /opt/
 sudo mv /opt/firefox /opt/firefox-stable
 sudo ln -sf /opt/firefox-stable/firefox /usr/bin/firefox
-rm /tmp/firefox.tar.bz2
+# Install runtime deps Firefox needs
+sudo apt-get install -y -qq libdbus-glib-1-2 libgtk-3-0 libasound2t64 2>/dev/null || true
+rm /tmp/firefox.tar
 firefox --version
 
 echo "=== All browsers installed ==="
