@@ -25,10 +25,15 @@ if ! command -v microsoft-edge-stable &>/dev/null; then
 fi
 microsoft-edge-stable --version
 
-echo "=== Installing Firefox Stable ==="
-if ! command -v firefox &>/dev/null; then
-  sudo apt-get install -y -qq firefox
-fi
+echo "=== Installing Firefox Stable (direct from Mozilla) ==="
+# Download latest stable directly from Mozilla — faster than waiting for apt
+curl -sL "https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=en-US" \
+  -o /tmp/firefox.tar.bz2
+sudo rm -rf /opt/firefox-stable
+sudo tar -xjf /tmp/firefox.tar.bz2 -C /opt/
+sudo mv /opt/firefox /opt/firefox-stable
+sudo ln -sf /opt/firefox-stable/firefox /usr/bin/firefox
+rm /tmp/firefox.tar.bz2
 firefox --version
 
 echo "=== All browsers installed ==="
