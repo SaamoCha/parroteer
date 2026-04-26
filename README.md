@@ -50,14 +50,25 @@ parroteer/
 │
 ├── cmd/
 │   ├── utls-capture/          # Go: capture utls parrot fingerprint via reflector
+│   ├── uquic-capture/         # Go: capture uquic parrot QUIC fingerprint
+│   ├── gen-spec/              # Go: browserleaks JSON → utls ClientHelloSpec JSON
+│   ├── replay-verify/         # Go: load spec, connect via utls, verify match
 │   ├── ch-compare/            # Go: compare ClientHello structures
 │   └── ch-inspect/            # Go: inspect ClientHello details
 │
+├── internal/specgen/          # Go: spec translation library (used by gen-spec)
+│
 ├── src/
 │   ├── capture.ts             # Selenium: launch browser, visit reflector, get JSON
+│   ├── capture-quic.ts        # Selenium: capture QUIC fingerprint via self-hosted reflector
 │   ├── normalize.ts           # strip noise, preserve GREASE positions, extract fields
 │   ├── report.ts              # structural diff + format Issue body
 │   └── run.ts                 # entry point: capture → normalize → diff → notify
+│
+├── reflector/                 # Self-hosted clienthellod reflector
+│   ├── Caddyfile              # Caddy + clienthellod modcaddy config
+│   ├── setup-oracle.sh        # Install on Oracle Always Free Ubuntu
+│   └── README.md
 │
 ├── fixtures/
 │   ├── baselines/             # last known browser fingerprints (committed by CI)
@@ -65,9 +76,9 @@ parroteer/
 │
 ├── reports/                   # diff reports (gitignored, uploaded as CI artifacts)
 ├── scripts/
-│   └── install-browsers.sh    # install Chrome, Edge, Firefox on Ubuntu
+│   └── install-browsers.sh    # install Chrome, Edge, Firefox (direct from vendors)
 │
-├── go.mod / go.sum            # Go deps (utls, auto-updated to latest commit)
+├── go.mod / go.sum            # Go deps (utls, uquic, auto-updated to latest commit)
 ├── package.json               # Node deps (selenium-webdriver, tsx)
 └── tsconfig.json
 ```
@@ -211,27 +222,36 @@ npx tsx src/normalize.ts fixtures/captures/chrome-stable-raw.json
 
 ### Phase 1: Capture + Detect — done
 
-- [x] Selenium capture for Chrome, Edge, Firefox
+- [x] Selenium capture for Chrome, Edge, Firefox, Safari
 - [x] Normalization with GREASE position preservation
 - [x] Structural diff (field-level added/removed/changed)
 - [x] utls parrot vs real browser comparison
-- [x] GitHub Actions daily cron
+- [x] GitHub Actions daily cron (Linux + macOS Safari)
 - [x] Known-diff dedup (no duplicate Issues)
 - [x] Auto-update utls to latest commit
+- [x] Direct Mozilla download for latest Firefox (faster than apt)
 
-### Phase 2: Parrot Generation + QUIC
+### Phase 2: Parrot Generation + Replay — done
 
-- [ ] ClientHello → ClientHelloSpec Go code generator
-- [ ] Replay check (gen spec → connect to reflector → compare)
-- [ ] Self-hosted reflector for QUIC Alt-Svc
-- [ ] QUIC Initial capture + QUICSpec generator
+- [x] ClientHello → utls JSON spec generator (`cmd/gen-spec/`)
+- [x] Replay check (gen spec → connect to reflector → compare) (`cmd/replay-verify/`)
+- [x] CI integration: auto-generate verified spec, attach to Issue
+- [x] Self-hosted clienthellod reflector on Oracle Always Free
+- [x] QUIC capture from real browsers (`src/capture-quic.ts`)
+- [x] uquic parrot capture for comparison (`cmd/uquic-capture/`)
+
+### Phase 3: QUIC Pipeline Integration
+
+- [ ] QUIC normalize + diff (currently only manual comparison)
+- [ ] uquic vs real browser comparison in CI workflow
+- [ ] QUIC spec generator (uquic equivalent of utls gen-spec)
 - [ ] On successful replay: open draft PR with generated Go code
 
 ### Future
 
-- [ ] Safari via macOS runner
 - [ ] Chrome Beta / Firefox Nightly
 - [ ] iOS Safari via Xcode simulator
+- [ ] Auto-PR to refraction-networking/utls when spec verified
 
 ## Known Challenges
 
