@@ -4,6 +4,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
+import android.util.Base64;
 
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -54,7 +55,9 @@ public final class OkHttpCaptureTest {
                 stream.write('\n');
             }
 
+            String encoded = Base64.encodeToString(json.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
             System.out.println("PARROTEER_ANDROID_CAPTURE=" + out.getAbsolutePath());
+            System.out.println("PARROTEER_ANDROID_CAPTURE_B64=" + encoded);
         }
     }
 }

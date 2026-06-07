@@ -220,15 +220,10 @@ jobs:
           arch: x86_64
           profile: pixel_7_pro
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: |
-            bash scripts/capture-android-okhttp.sh
-            ARGS="--browser android-okhttp"
-            if [ "${{ inputs.notify }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
-              ARGS="$ARGS --notify"
-            fi
-            npx tsx src/run.ts $ARGS
+          script: bash scripts/run-android-okhttp-watch.sh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PARROTEER_NOTIFY: ${{ inputs.notify }}
 
       - name: Commit updates
         run: |
