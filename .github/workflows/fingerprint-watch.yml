@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       browser:
-        description: "Single browser to capture (leave empty for all)"
+        description: "Single target to capture (leave empty for all; e.g. chrome-stable, firefox-stable, safari-stable, android-okhttp)"
         required: false
         type: string
       notify:
@@ -28,6 +28,7 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    if: ${{ github.event_name == 'schedule' || inputs.browser == '' || startsWith(inputs.browser, 'chrome-') || startsWith(inputs.browser, 'edge-') || startsWith(inputs.browser, 'firefox-') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -101,11 +102,12 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 15
     needs: linux  # run after linux so git pushes don't conflict
+    if: ${{ always() && (github.event_name == 'schedule' || inputs.browser == '' || inputs.browser == 'safari-stable') }}
 
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main  # pull latest (linux job may have pushed)
+          ref: ${{ github.ref_name }}  # pull latest from the triggering branch
 
       - uses: actions/setup-node@v4
         with:
@@ -141,7 +143,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin main
+          git pull --rebase origin "${GITHUB_REF_NAME}"
           git add fixtures/baselines/ fixtures/known-diffs/
           if git diff --cached --quiet; then
             echo "No changes to commit."
@@ -164,6 +166,97 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fingerprint-report-safari-${{ github.run_id }}
+          path: reports/
+          retention-days: 90
+          if-no-files-found: ignore
+
+  # ── Android: OkHttp on emulator ───────────────────────────────────────
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [linux, safari]  # run last so git pushes don't conflict
+    if: ${{ always() && (github.event_name == 'schedule' || inputs.browser == '' || inputs.browser == 'android-okhttp') }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}  # pull latest from the triggering branch
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Update utls to latest commit
+        run: |
+          go get github.com/refraction-networking/utls@master
+          go mod tidy
+
+      - name: Run Android OkHttp fingerprint capture
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7_pro
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            bash scripts/capture-android-okhttp.sh
+            ARGS="--browser android-okhttp"
+            if [ "${{ inputs.notify }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+              ARGS="$ARGS --notify"
+            fi
+            npx tsx src/run.ts $ARGS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit updates
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git add fixtures/baselines/ fixtures/known-diffs/ go.mod go.sum
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update Android fingerprint baseline [skip ci]"
+            git push
+          fi
+
+      - name: Upload raw captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-captures-android-${{ github.run_id }}
+          path: fixtures/captures/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fingerprint-report-android-${{ github.run_id }}
           path: reports/
           retention-days: 90
           if-no-files-found: ignore

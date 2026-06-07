@@ -15,6 +15,7 @@ import (
 )
 
 var parrots = map[string]tls.ClientHelloID{
+	"android": tls.HelloAndroid_11_OkHttp,
 	"chrome":  tls.HelloChrome_Auto,
 	"firefox": tls.HelloFirefox_Auto,
 	"edge":    tls.HelloEdge_Auto,
@@ -25,7 +26,7 @@ var parrots = map[string]tls.ClientHelloID{
 func capture(parrotName string) ([]byte, error) {
 	helloID, ok := parrots[parrotName]
 	if !ok {
-		return nil, fmt.Errorf("unknown parrot: %s (available: chrome, firefox, edge, safari, ios)", parrotName)
+		return nil, fmt.Errorf("unknown parrot: %s (available: android, chrome, firefox, edge, safari, ios)", parrotName)
 	}
 
 	host := "tls.browserleaks.com"
