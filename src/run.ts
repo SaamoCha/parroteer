@@ -13,6 +13,7 @@ const REPORTS_DIR = path.resolve("reports");
 
 // Map browser type to utls parrot name
 const UTLS_PARROT_MAP: Record<string, string> = {
+  android: "android",
   chrome: "chrome",
   edge: "edge",
   firefox: "firefox",
@@ -134,6 +135,11 @@ function browserExists(config: BrowserConfig): boolean {
   return fs.existsSync(config.binaryPath);
 }
 
+function parrotDisplayName(parrotName: string): string {
+  if (parrotName === "android") return "HelloAndroid_11_OkHttp";
+  return `Hello${parrotName[0].toUpperCase() + parrotName.slice(1)}_Auto`;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const browserFilter = args.indexOf("--browser") !== -1 ? args[args.indexOf("--browser") + 1] : null;
@@ -155,7 +161,7 @@ async function main() {
   const utlsFingerprints: Record<string, NormalizedFingerprint> = {};
 
   for (const parrotName of utlsParrotTypes) {
-    console.log(`Capturing utls Hello${parrotName[0].toUpperCase() + parrotName.slice(1)}_Auto parrot...`);
+    console.log(`Capturing utls ${parrotDisplayName(parrotName)} parrot...`);
     const result = captureUtls(parrotName);
     if (result) {
       const fp = normalize(result);
