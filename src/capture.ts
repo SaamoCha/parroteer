@@ -1,4 +1,5 @@
 import { Builder, By } from "selenium-webdriver";
+import * as fs from "fs";
 import chrome from "selenium-webdriver/chrome.js";
 import firefox from "selenium-webdriver/firefox.js";
 import edge from "selenium-webdriver/edge.js";
@@ -11,7 +12,7 @@ const REFLECTOR_URL = "https://tls.browserleaks.com/";
 
 export interface BrowserConfig {
   name: string;
-  type: "chrome" | "firefox" | "edge" | "safari";
+  type: "chrome" | "firefox" | "edge" | "safari" | "android";
   binaryPath: string;
 }
 
@@ -28,12 +29,12 @@ export const BROWSERS: BrowserConfig[] = resolveBrowserPaths([
   ]},
   { name: "firefox-nightly", type: "firefox", candidates: ["/opt/firefox-nightly/firefox"] },
   { name: "safari-stable", type: "safari", candidates: ["/usr/bin/safaridriver"] },
+  { name: "android-okhttp", type: "android", candidates: ["fixtures/captures/android-okhttp-latest.json"] },
 ]);
 
 function resolveBrowserPaths(
   configs: { name: string; type: BrowserConfig["type"]; candidates: string[] }[],
 ): BrowserConfig[] {
-  const fs = require("fs") as typeof import("fs");
   return configs.map(({ name, type, candidates }) => ({
     name,
     type,
@@ -44,7 +45,9 @@ function resolveBrowserPaths(
 export async function capture(browser: BrowserConfig): Promise<Record<string, unknown>> {
   let driver;
 
-  if (browser.type === "chrome") {
+  if (browser.type === "android") {
+    return JSON.parse(fs.readFileSync(browser.binaryPath, "utf8"));
+  } else if (browser.type === "chrome") {
     const options = new chrome.Options();
     options.addArguments("--headless=new");
     options.setChromeBinaryPath(browser.binaryPath);
