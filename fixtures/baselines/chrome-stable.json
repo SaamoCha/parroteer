@@ -56,9 +56,6 @@
       29
     ],
     "signature_algorithms": [
-      2308,
-      2309,
-      2310,
       1027,
       2052,
       1025,
@@ -79,5 +76,5 @@
     "cert_compression_algorithms": "",
     "early_data": false
   },
-  "captured_at": "2026-07-08T08:10:54.862Z"
+  "captured_at": "2026-07-09T09:29:45.474Z"
 }
