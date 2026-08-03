@@ -3,7 +3,7 @@ module github.com/parroteer/parroteer
 go 1.26.2
 
 require (
-	github.com/refraction-networking/utls v1.8.3-0.20260728190431-ffd9d0fc0410
+	github.com/refraction-networking/utls v1.8.3-0.20260802151714-23b1dac19c06
 	golang.org/x/crypto v0.50.0
 	golang.org/x/net v0.53.0
 )
