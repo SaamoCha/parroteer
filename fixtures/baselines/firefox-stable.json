@@ -27,6 +27,7 @@
       16,
       18,
       23,
+      27,
       28,
       34,
       35,
@@ -78,5 +79,5 @@
     "cert_compression_algorithms": "",
     "early_data": false
   },
-  "captured_at": "2026-08-15T06:23:08.154Z"
+  "captured_at": "2026-08-16T06:25:17.970Z"
 }
