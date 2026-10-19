@@ -7,7 +7,9 @@ Automated browser fingerprint monitoring and parrot drift detection for
 Runs daily on GitHub Actions. Captures real TLS fingerprints from desktop
 browsers (via Selenium) and from Android OkHttp (via an emulator), normalizes
 them, compares against utls parrots, and opens a GitHub Issue when a parrot
-falls out of sync with its real browser.
+falls out of sync with its real browser. A second job does the same for QUIC:
+it captures the QUIC Initial packets of Chrome, Edge and Firefox and compares
+them with the uquic parrots.
 
 ## Why
 
@@ -51,21 +53,28 @@ parroteer/
 │
 ├── cmd/
 │   ├── utls-capture/          # Go: capture utls parrot fingerprint via reflector
+│   ├── uquic-capture/         # Go: record a uquic parrot's QUIC Initial flight offline
+│   ├── gen-quic-spec/         # Go: patch a uquic parrot toward a real capture, replay it
 │   ├── gen-spec/              # Go: browserleaks JSON → utls ClientHelloSpec JSON
 │   ├── replay-verify/         # Go: load spec, connect via utls, verify match
 │   ├── ch-compare/            # Go: compare ClientHello structures
 │   └── ch-inspect/            # Go: inspect ClientHello details
 │
 ├── internal/specgen/          # Go: spec translation library (used by gen-spec)
+├── internal/quiccapture/      # Go: offline QUIC Initial capture with clienthellod
 │
 ├── src/
 │   ├── capture.ts             # Selenium: launch browser, visit reflector, get JSON
-│   ├── capture-quic.ts        # Selenium: capture QUIC fingerprint via self-hosted reflector
+│   ├── capture-quic.ts        # Selenium: capture QUIC fingerprints via the local reflector
+│   ├── normalize-quic.ts      # QUIC fingerprint normalization
+│   ├── report-quic.ts         # QUIC diff + Issue formatting
+│   ├── run-quic.ts            # QUIC entry point: capture → normalize → diff → notify
 │   ├── normalize.ts           # strip noise, preserve GREASE positions, extract fields
 │   ├── report.ts              # structural diff + format Issue body
 │   └── run.ts                 # entry point: capture → normalize → diff → notify
 │
-├── reflector/                 # Self-hosted clienthellod reflector
+├── reflector/                 # Self-hosted clienthellod reflector (TLS)
+│   ├── local/Caddyfile        # Local QUIC reflector used in CI (reflector.test)
 │   ├── Caddyfile              # Caddy + clienthellod modcaddy config
 │   ├── setup-oracle.sh        # Install on Oracle Always Free Ubuntu
 │   └── README.md
@@ -76,7 +85,8 @@ parroteer/
 │
 ├── reports/                   # diff reports (gitignored, uploaded as CI artifacts)
 ├── scripts/
-│   └── install-browsers.sh    # install Chrome, Edge, Firefox (direct from vendors)
+│   ├── install-browsers.sh    # install Chrome, Edge, Firefox (direct from vendors)
+│   └── start-quic-reflector.sh # build + start the local QUIC reflector
 │
 ├── go.mod / go.sum            # Go deps (utls, uquic, auto-updated to latest commit)
 ├── package.json               # Node deps (selenium-webdriver, tsx)
@@ -220,6 +230,37 @@ The workflow runs automatically at UTC 06:00 daily. To trigger manually:
 npx tsx src/normalize.ts fixtures/captures/chrome-stable-raw.json
 ```
 
+## QUIC Pipeline
+
+`src/run-quic.ts` runs in the `quic` job of the workflow:
+
+1. `scripts/start-quic-reflector.sh` starts a clienthellod reflector on
+   `127.0.0.1:443` under the private name `reflector.test`, with its own CA.
+   No public domain or DNS record is involved. It also sets the loopback MTU
+   to 1500 so browsers split their Initial packets as on a real network path.
+2. Chrome and Edge are forced onto QUIC (`--origin-to-force-quic-on`) and
+   accept the reflector certificate by its SPKI hash. Firefox uses
+   `network.http.http3.alt-svc-mapping-for-testing` and trusts the CA through
+   an enterprise policy.
+3. `cmd/uquic-capture` records each uquic parrot's Initial flight offline (no
+   server, no handshake) and parses it with the same clienthellod version as
+   the reflector.
+4. `src/normalize-quic.ts` compares packet count, frame types, the QUIC
+   ClientHello fields and the transport parameters. It leaves out what changes
+   per connection: DCID length, first packet number, frame order and
+   `google_initial_rtt` (0x3127), which Chrome only sends once it has an RTT
+   estimate.
+5. When a parrot differs, `cmd/gen-quic-spec` patches the parrot toward the
+   real capture (transport parameters and the TLS lists a capture exposes),
+   replays it, and adds the patch and anything still different to the report.
+
+Run it locally (needs root for port 443):
+
+```bash
+FIREFOX_DIR=/opt/firefox-stable bash scripts/start-quic-reflector.sh   # prints QUIC_REFLECTOR_SPKI
+QUIC_REFLECTOR_SPKI=... npx tsx src/run-quic.ts
+```
+
 ## Development Roadmap
 
 ### Phase 1: Capture + Detect — done
@@ -242,13 +283,14 @@ npx tsx src/normalize.ts fixtures/captures/chrome-stable-raw.json
 - [x] Self-hosted clienthellod reflector on Oracle Always Free
 - [x] QUIC capture from real browsers (`src/capture-quic.ts`, manual)
 
-### Phase 3: QUIC Pipeline Integration
+### Phase 3: QUIC Pipeline Integration — done
 
-- [ ] uquic parrot capture for comparison (`cmd/uquic-capture/`)
-- [ ] QUIC normalize + diff (currently only manual comparison)
-- [ ] uquic vs real browser comparison in CI workflow
-- [ ] QUIC spec generator (uquic equivalent of utls gen-spec)
-- [ ] On successful replay: open draft PR with generated Go code
+- [x] Local QUIC reflector in CI, no public domain (`scripts/start-quic-reflector.sh`)
+- [x] uquic parrot capture for comparison (`cmd/uquic-capture/`)
+- [x] QUIC normalize + diff, baselines and known-diff dedup (`src/run-quic.ts`)
+- [x] uquic vs real browser comparison in CI workflow (`quic` job)
+- [x] QUIC spec patch + replay (`cmd/gen-quic-spec/`)
+- [ ] On successful replay: open draft PR with generated Go code (not enabled)
 
 ### Future
 
@@ -265,6 +307,15 @@ does not.
 **QUIC requires two visits:** Browsers use TCP on first connection. The
 reflector must send `Alt-Svc` header so the browser upgrades to QUIC on the
 second visit. Only relevant for QUIC capture.
+
+**Firefox and GSO on loopback:** Firefox sends its two Initial packets with
+one GSO call. On loopback the reflector receives them as one buffer, which
+clienthellod cannot split, so the QUIC capture sets
+`network.http.http3.use_nspr_for_io`. The packets themselves are unchanged.
+
+**Edge on Ubuntu 24.04 runners:** AppArmor restricts unprivileged user
+namespaces, which makes Edge abort on its SUID sandbox helper. The `quic` job
+sets `kernel.apparmor_restrict_unprivileged_userns=0`.
 
 **Safari depends on the macOS version:** Safari's TLS fingerprint comes from
 the OS TLS stack, not from the Safari version. Safari 26 on macOS 15 still
