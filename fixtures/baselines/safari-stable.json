@@ -2,9 +2,9 @@
   "fingerprint": {
     "cipher_suites": [
       -1,
-      4865,
       4866,
       4867,
+      4865,
       49196,
       49195,
       52393,
@@ -25,7 +25,6 @@
     ],
     "extensions": [
       -1,
-      -1,
       0,
       5,
       10,
@@ -33,16 +32,17 @@
       13,
       16,
       18,
-      21,
       23,
       27,
       43,
       45,
       51,
-      65281
+      65281,
+      -1
     ],
     "supported_groups": [
       -1,
+      4588,
       29,
       23,
       24,
@@ -51,12 +51,11 @@
     "supported_versions": [
       -1,
       772,
-      771,
-      770,
-      769
+      771
     ],
     "key_share_groups": [
       -1,
+      4588,
       29
     ],
     "signature_algorithms": [
@@ -82,5 +81,5 @@
     "cert_compression_algorithms": "",
     "early_data": false
   },
-  "captured_at": "2026-04-20T08:24:01.137Z"
+  "captured_at": "2026-10-19T01:54:07.618Z"
 }
