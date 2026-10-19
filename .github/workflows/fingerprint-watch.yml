@@ -99,7 +99,10 @@ jobs:
 
   # ── macOS: Safari ─────────────────────────────────────────────────────
   safari:
-    runs-on: macos-15
+    # Safari's TLS stack comes from the OS, not the Safari version: Safari 26 on
+    # macOS 15 still sends no X25519MLKEM768 key share and offers TLS 1.0/1.1.
+    # Use macOS 26 so the capture matches what current Safari users send.
+    runs-on: macos-26
     timeout-minutes: 15
     needs: linux  # run after linux so git pushes don't conflict
     if: ${{ always() && (github.event_name == 'schedule' || inputs.browser == '' || inputs.browser == 'safari-stable') }}
@@ -120,6 +123,12 @@ jobs:
 
       - name: Enable SafariDriver
         run: sudo safaridriver --enable
+
+      - name: Record macOS and Safari versions
+        run: |
+          sw_vers
+          echo "Safari $(defaults read /Applications/Safari.app/Contents/Info CFBundleShortVersionString)"
+          safaridriver --version
 
       - name: Install Node dependencies
         run: npm ci
