@@ -152,12 +152,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin "${GITHUB_REF_NAME}"
           git add fixtures/baselines/ fixtures/known-diffs/
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
             git commit -m "chore: update Safari fingerprint baseline [skip ci]"
+            # Commit before rebasing: pulling with the new baseline still unstaged
+            # fails ("cannot pull with rebase: You have unstaged changes").
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
             git push
           fi
 
@@ -238,12 +240,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin "${GITHUB_REF_NAME}"
           git add fixtures/baselines/ fixtures/known-diffs/ go.mod go.sum
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
             git commit -m "chore: update Android fingerprint baseline [skip ci]"
+            # Commit before rebasing: pulling with the new baseline still unstaged
+            # fails ("cannot pull with rebase: You have unstaged changes").
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
             git push
           fi
 
