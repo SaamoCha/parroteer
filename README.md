@@ -4,9 +4,10 @@ Automated browser fingerprint monitoring and parrot drift detection for
 [utls](https://github.com/refraction-networking/utls) and
 [uquic](https://github.com/refraction-networking/uquic).
 
-Runs daily on GitHub Actions. Captures real browser TLS fingerprints via
-Selenium, normalizes them, compares against utls parrots, and opens a
-GitHub Issue when a parrot falls out of sync with its real browser.
+Runs daily on GitHub Actions. Captures real TLS fingerprints from desktop
+browsers (via Selenium) and from Android OkHttp (via an emulator), normalizes
+them, compares against utls parrots, and opens a GitHub Issue when a parrot
+falls out of sync with its real browser.
 
 ## Why
 
@@ -21,7 +22,7 @@ sometimes weeks late. Parroteer closes that gap.
 ```
 Daily cron (UTC 06:00) or manual trigger
   │
-  ├─ 1. Update utls ── go get utls@main (always test latest commit)
+  ├─ 1. Update utls ── go get utls@master (always test latest commit)
   │
   ├─ 2. Capture ── launch real browsers (Selenium + system binaries)
   │                 + utls parrots (Go, via cmd/utls-capture)
@@ -50,7 +51,6 @@ parroteer/
 │
 ├── cmd/
 │   ├── utls-capture/          # Go: capture utls parrot fingerprint via reflector
-│   ├── uquic-capture/         # Go: capture uquic parrot QUIC fingerprint
 │   ├── gen-spec/              # Go: browserleaks JSON → utls ClientHelloSpec JSON
 │   ├── replay-verify/         # Go: load spec, connect via utls, verify match
 │   ├── ch-compare/            # Go: compare ClientHello structures
@@ -142,7 +142,7 @@ No patched or bundled browsers. This matters because:
 - Playwright's Firefox is a patched build — TLS fingerprint may differ
   from the real Firefox release
 - Playwright's WebKit is not Safari — Safari's TLS comes from Apple's
-  SecureTransport, unreproducible on Linux
+  OS TLS stack, unreproducible on Linux
 - Selenium uses the system-installed browser directly, so the captured
   fingerprint is exactly what a real user would produce
 
@@ -150,13 +150,15 @@ Driver management is handled by selenium-manager (built into Selenium v4+).
 
 ## Browser Coverage
 
-### Current (GitHub Actions ubuntu-latest)
+### Current
 
-| Browser | Binary | Install |
+| Client | Runner | How |
 |---|---|---|
-| Chrome Stable | `/usr/bin/google-chrome-stable` | `scripts/install-browsers.sh` |
-| Edge Stable | `/usr/bin/microsoft-edge-stable` | `scripts/install-browsers.sh` |
-| Firefox Stable | `/usr/bin/firefox` | `scripts/install-browsers.sh` |
+| Chrome Stable | `ubuntu-latest` | `scripts/install-browsers.sh` + Selenium |
+| Edge Stable | `ubuntu-latest` | `scripts/install-browsers.sh` + Selenium |
+| Firefox Stable | `ubuntu-latest` | direct download from Mozilla + Selenium |
+| Safari | `macos-26` | system Safari + safaridriver |
+| Android OkHttp 5.3.0 | `ubuntu-latest` | Android 16 (API 36) emulator |
 
 ### Planned
 
@@ -164,7 +166,7 @@ Driver management is handled by selenium-manager (built into Selenium v4+).
 |---|---|
 | Chrome Beta | Same install script, not yet enabled |
 | Firefox Nightly | Manual download from Mozilla |
-| Safari | Requires macOS runner + safaridriver |
+| iOS Safari | Needs an iOS device or simulator |
 
 ## Normalization Fields
 
@@ -175,7 +177,7 @@ Driver management is handled by selenium-manager (built into Selenium v4+).
 | supported_groups | ext 10 `named_group_list` | preserved |
 | supported_versions | ext 43 `versions` | preserved |
 | key_share_groups | ext 51 `client_shares[].group.id` | preserved |
-| signature_algorithms | ext 13 `supported_signature_algorithms` | N/A |
+| signature_algorithms | ext 13 `supported_signature_algorithms` | preserved |
 | alpn | ext 16 `protocol_name_list` | N/A |
 | ec_point_formats | ext 11 `ec_point_format_list` | N/A |
 | psk_key_exchange_mode | ext 45 `ke_modes` | N/A |
@@ -223,6 +225,7 @@ npx tsx src/normalize.ts fixtures/captures/chrome-stable-raw.json
 ### Phase 1: Capture + Detect — done
 
 - [x] Selenium capture for Chrome, Edge, Firefox, Safari
+- [x] Android OkHttp capture on an emulator
 - [x] Normalization with GREASE position preservation
 - [x] Structural diff (field-level added/removed/changed)
 - [x] utls parrot vs real browser comparison
@@ -237,11 +240,11 @@ npx tsx src/normalize.ts fixtures/captures/chrome-stable-raw.json
 - [x] Replay check (gen spec → connect to reflector → compare) (`cmd/replay-verify/`)
 - [x] CI integration: auto-generate verified spec, attach to Issue
 - [x] Self-hosted clienthellod reflector on Oracle Always Free
-- [x] QUIC capture from real browsers (`src/capture-quic.ts`)
-- [x] uquic parrot capture for comparison (`cmd/uquic-capture/`)
+- [x] QUIC capture from real browsers (`src/capture-quic.ts`, manual)
 
 ### Phase 3: QUIC Pipeline Integration
 
+- [ ] uquic parrot capture for comparison (`cmd/uquic-capture/`)
 - [ ] QUIC normalize + diff (currently only manual comparison)
 - [ ] uquic vs real browser comparison in CI workflow
 - [ ] QUIC spec generator (uquic equivalent of utls gen-spec)
@@ -261,10 +264,12 @@ does not.
 
 **QUIC requires two visits:** Browsers use TCP on first connection. The
 reflector must send `Alt-Svc` header so the browser upgrades to QUIC on the
-second visit. Only relevant in Phase 2.
+second visit. Only relevant for QUIC capture.
 
-**Safari requires macOS:** Safari's TLS fingerprint comes from Apple's
-SecureTransport, which only exists on macOS/iOS.
+**Safari depends on the macOS version:** Safari's TLS fingerprint comes from
+the OS TLS stack, not from the Safari version. Safari 26 on macOS 15 still
+sends no X25519MLKEM768 key share and offers TLS 1.0/1.1, so the Safari job
+runs on `macos-26`.
 
 ## License
 
