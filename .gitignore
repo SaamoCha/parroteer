@@ -3,3 +3,4 @@ dist/
 reports/
 fixtures/captures/
 fixtures/specs/
+.quic-reflector/

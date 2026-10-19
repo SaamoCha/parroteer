@@ -1,100 +1,124 @@
 /**
- * capture-quic.ts — Capture QUIC Initial Packet fingerprints from real browsers.
+ * capture-quic.ts — Capture QUIC Initial fingerprints from real browsers.
  *
- * Flow:
- *   1. Visit quic-reflect.example.com (TCP/H2) — browser gets Alt-Svc: h3
- *   2. Wait for browser to cache Alt-Svc
- *   3. Visit again — browser upgrades to QUIC (H3)
- *   4. Visit once more — clienthellod has cached the QUIC fingerprint
- *   5. Read JSON response containing QUIC Initial Packet analysis
+ * The browsers talk to a local clienthellod reflector (see
+ * scripts/start-quic-reflector.sh) under a private hostname, so no public
+ * domain is involved:
  *
- * The QUIC reflector is a self-hosted clienthellod instance that captures
- * QUIC Initial Packets via raw UDP listener and serves the fingerprint
- * back to the client on subsequent requests.
+ *   QUIC_REFLECTOR_URL   reflector URL (default https://reflector.test/)
+ *   QUIC_REFLECTOR_IP    resolve the reflector host to this IP (default 127.0.0.1)
+ *   QUIC_REFLECTOR_SPKI  base64 SHA-256 of the reflector certificate's SPKI,
+ *                        so Chromium accepts the private certificate
+ *
+ * Chromium is forced onto QUIC with --origin-to-force-quic-on. Firefox uses
+ * network.http.http3.alt-svc-mapping-for-testing and trusts the reflector's
+ * CA through the enterprise policy the reflector script installs. Firefox is
+ * also switched to its NSPR socket path: on loopback, its default GSO path
+ * hands both Initial packets to the reflector in one buffer, which
+ * clienthellod cannot split. The packets themselves are unchanged.
  */
 
 import { Builder, By, until } from "selenium-webdriver";
 import chrome from "selenium-webdriver/chrome.js";
 import firefox from "selenium-webdriver/firefox.js";
 import edge from "selenium-webdriver/edge.js";
-import safari from "selenium-webdriver/safari.js";
+import * as fs from "fs";
+import * as path from "path";
 import { BROWSERS, type BrowserConfig } from "./capture.js";
 
-const QUIC_REFLECTOR_URL = process.env.QUIC_REFLECTOR_URL ?? "https://quic-reflect.example.com/";
+const QUIC_REFLECTOR_URL = process.env.QUIC_REFLECTOR_URL ?? "https://reflector.test/";
+const QUIC_REFLECTOR_IP = process.env.QUIC_REFLECTOR_IP ?? "127.0.0.1";
+const QUIC_REFLECTOR_SPKI = process.env.QUIC_REFLECTOR_SPKI ?? "";
 
-// Number of visits to attempt. Browser needs at least 2 visits:
-// visit 1 = TCP (gets Alt-Svc), visit 2+ = may use QUIC.
 const MAX_VISITS = 5;
+const LOG_DIR = path.resolve("fixtures/captures");
 const VISIT_DELAY_MS = 2000;
+
+const host = new URL(QUIC_REFLECTOR_URL).hostname;
+const port = new URL(QUIC_REFLECTOR_URL).port || "443";
+
+// Lets local runs point at a different binary, e.g. FIREFOX_STABLE_BINARY.
+function binaryFor(browser: BrowserConfig): string {
+  return process.env[`${browser.name.toUpperCase().replace(/-/g, "_")}_BINARY`] ?? browser.binaryPath;
+}
+
+function chromiumArgs(): string[] {
+  const args = [
+    "--headless=new",
+    `--host-resolver-rules=MAP ${host} ${QUIC_REFLECTOR_IP}`,
+    `--origin-to-force-quic-on=${host}:${port}`,
+  ];
+  if (QUIC_REFLECTOR_SPKI) args.push(`--ignore-certificate-errors-spki-list=${QUIC_REFLECTOR_SPKI}`);
+  return args;
+}
 
 function buildDriver(browser: BrowserConfig) {
   if (browser.type === "chrome") {
     const options = new chrome.Options();
-    options.addArguments("--headless=new");
-    // Enable QUIC in Chrome
-    options.addArguments("--enable-quic");
-    options.addArguments("--origin-to-force-quic-on=quic-reflect.example.com:443");
-    options.setChromeBinaryPath(browser.binaryPath);
-    return new Builder().forBrowser("chrome").setChromeOptions(options).build();
-  } else if (browser.type === "edge") {
+    options.addArguments(...chromiumArgs());
+    options.setChromeBinaryPath(binaryFor(browser));
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const service = new chrome.ServiceBuilder().loggingTo(path.join(LOG_DIR, `${browser.name}-driver.log`)).enableVerboseLogging();
+    return new Builder().forBrowser("chrome").setChromeOptions(options).setChromeService(service).build();
+  }
+  if (browser.type === "edge") {
     const options = new edge.Options();
-    options.addArguments("--headless=new");
-    options.addArguments("--enable-quic");
-    options.addArguments("--origin-to-force-quic-on=quic-reflect.example.com:443");
-    options.setEdgeChromiumBinaryPath(browser.binaryPath);
-    return new Builder().forBrowser("MicrosoftEdge").setEdgeOptions(options).build();
-  } else if (browser.type === "firefox") {
+    options.addArguments(...chromiumArgs());
+    options.setEdgeChromiumBinaryPath(binaryFor(browser));
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const service = new edge.ServiceBuilder().loggingTo(path.join(LOG_DIR, `${browser.name}-driver.log`)).enableVerboseLogging();
+    return new Builder().forBrowser("MicrosoftEdge").setEdgeOptions(options).setEdgeService(service).build();
+  }
+  if (browser.type === "firefox") {
     const options = new firefox.Options();
     options.addArguments("-headless");
-    options.setBinary(browser.binaryPath);
+    options.setBinary(binaryFor(browser));
     options.setPreference("devtools.jsonview.enabled", false);
-    // Firefox has HTTP/3 enabled by default since ~v88
+    options.setPreference("network.dns.forceResolve", QUIC_REFLECTOR_IP);
+    options.setPreference("network.http.http3.alt-svc-mapping-for-testing", `${host};h3=:${port}`);
+    options.setPreference("network.http.http3.disable_when_third_party_roots_found", false);
+    options.setPreference("network.http.http3.use_nspr_for_io", true);
     return new Builder().forBrowser("firefox").setFirefoxOptions(options).build();
-  } else {
-    // Safari
-    const options = new safari.Options();
-    return new Builder().forBrowser("safari").setSafariOptions(options).build();
   }
+  throw new Error(`QUIC capture is not supported for ${browser.name}`);
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function captureQuic(browser: BrowserConfig): Promise<Record<string, unknown> | null> {
-  const driver = await buildDriver(browser);
+// Browser start-up occasionally fails on CI runners ("session not created");
+// one retry after a short pause is enough.
+async function startDriver(browser: BrowserConfig) {
+  try {
+    return await buildDriver(browser);
+  } catch (err) {
+    console.log(`    ${browser.name} did not start (${(err as Error).message.split("\n")[0]}), retrying once...`);
+    await sleep(5000);
+    return buildDriver(browser);
+  }
+}
 
+export async function captureQuic(browser: BrowserConfig): Promise<Record<string, unknown> | null> {
+  const driver = await startDriver(browser);
   try {
     for (let visit = 1; visit <= MAX_VISITS; visit++) {
-      console.log(`    QUIC visit ${visit}/${MAX_VISITS}...`);
       await driver.get(QUIC_REFLECTOR_URL);
-
-      // Wait for page to load
-      await driver.wait(until.elementLocated(By.tagName("body")), 10000);
-      const body = await driver.findElement(By.tagName("body"));
-      const text = await body.getText();
-
-      // Check if we got QUIC fingerprint data (non-empty response)
-      if (text && text.trim().length > 2) {
-        try {
-          const data = JSON.parse(text);
-          // clienthellod QUIC response has fields like quic_version, quic_cipher_suites, etc.
-          // or it might wrap in a structure — check for any meaningful content
-          if (data && Object.keys(data).length > 0) {
-            console.log(`    Got QUIC fingerprint on visit ${visit}`);
-            return data;
-          }
-        } catch {
-          // Not JSON yet, keep trying
+      const body = await driver.wait(until.elementLocated(By.tagName("body")), 15000);
+      const text = (await body.getText()).trim();
+      try {
+        const data = JSON.parse(text);
+        if (data?.ClientInitials) {
+          console.log(`    Got QUIC fingerprint on visit ${visit}`);
+          return data;
         }
+      } catch {
+        // not a QUIC fingerprint yet
       }
-
-      if (visit < MAX_VISITS) {
-        await sleep(VISIT_DELAY_MS);
-      }
+      console.log(`    visit ${visit}: no QUIC fingerprint yet (body: ${JSON.stringify(text.slice(0, 80))})`);
+      if (visit < MAX_VISITS) await sleep(VISIT_DELAY_MS);
     }
-
-    console.log(`    No QUIC fingerprint after ${MAX_VISITS} visits (browser may not have upgraded to h3)`);
+    console.log(`    No QUIC fingerprint after ${MAX_VISITS} visits`);
     return null;
   } finally {
     await driver.quit();
@@ -104,26 +128,20 @@ export async function captureQuic(browser: BrowserConfig): Promise<Record<string
 // CLI: npx tsx src/capture-quic.ts [--browser chrome-stable]
 if (process.argv[1]?.endsWith("capture-quic.ts")) {
   const args = process.argv.slice(2);
-  const browserIdx = args.indexOf("--browser");
-  const browserName = browserIdx !== -1 ? args[browserIdx + 1] : "chrome-stable";
-
-  const config = BROWSERS.find((b) => b.name === browserName);
+  const i = args.indexOf("--browser");
+  const name = i !== -1 ? args[i + 1] : "chrome-stable";
+  const config = BROWSERS.find((b) => b.name === name);
   if (!config) {
-    console.error(`Unknown browser: ${browserName}. Available: ${BROWSERS.map((b) => b.name).join(", ")}`);
+    console.error(`Unknown browser: ${name}. Available: ${BROWSERS.map((b) => b.name).join(", ")}`);
     process.exit(1);
   }
-
-  console.log(`Capturing QUIC fingerprint for ${browserName}...`);
-  console.log(`Reflector: ${QUIC_REFLECTOR_URL}`);
-  captureQuic(config).then((result) => {
-    if (result) {
+  captureQuic(config)
+    .then((result) => {
+      if (!result) process.exit(1);
       console.log(JSON.stringify(result, null, 2));
-    } else {
-      console.error("No QUIC fingerprint captured.");
+    })
+    .catch((err) => {
+      console.error(`Capture failed: ${err.message}`);
       process.exit(1);
-    }
-  }).catch((err) => {
-    console.error(`Capture failed: ${err.message}`);
-    process.exit(1);
-  });
+    });
 }

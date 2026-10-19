@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       browser:
-        description: "Single target to capture (leave empty for all; e.g. chrome-stable, firefox-stable, safari-stable, android-okhttp)"
+        description: "Single target to capture (leave empty for all; e.g. chrome-stable, firefox-stable, safari-stable, android-okhttp, quic)"
         required: false
         type: string
       notify:
@@ -265,6 +265,102 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fingerprint-report-android-${{ github.run_id }}
+          path: reports/
+          retention-days: 90
+          if-no-files-found: ignore
+
+  # ── Linux: QUIC (Chrome, Edge, Firefox vs uquic) ──────────────────────
+  quic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: linux  # run after linux so git pushes don't conflict
+    if: ${{ always() && (github.event_name == 'schedule' || inputs.browser == '' || inputs.browser == 'quic') }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}  # pull latest from the triggering branch
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install browsers
+        run: bash scripts/install-browsers.sh
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Update utls and uquic to latest commit
+        run: |
+          go get github.com/refraction-networking/utls@master github.com/refraction-networking/uquic@master
+          go mod tidy
+
+      - name: Cache reflector build
+        uses: actions/cache@v4
+        with:
+          path: .quic-reflector/caddy
+          key: quic-reflector-caddy-v2.11.2-clienthellod-v0.5.0-alpha
+
+      - name: Start local QUIC reflector
+        run: |
+          # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor,
+          # which makes Edge abort on its SUID sandbox helper. Let Chromium use
+          # its namespace sandbox instead.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          FIREFOX_DIR=/opt/firefox-stable bash scripts/start-quic-reflector.sh
+
+      - name: Run QUIC fingerprint capture
+        run: |
+          ARGS=""
+          if [ "${{ inputs.notify }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+            ARGS="--notify"
+          fi
+          npx tsx src/run-quic.ts $ARGS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit updates
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add fixtures/baselines/*-quic.json fixtures/known-diffs/*-quic-vs-uquic-*.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update QUIC fingerprint baselines [skip ci]"
+            # Commit before rebasing: pulling with the new baseline still unstaged
+            # fails ("cannot pull with rebase: You have unstaged changes").
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+            git push
+          fi
+
+      - name: Collect reflector log
+        if: always()
+        run: |
+          mkdir -p fixtures/captures
+          sudo cp .quic-reflector/caddy.log fixtures/captures/reflector-caddy.log 2>/dev/null || true
+          sudo chown -R "$(id -u):$(id -g)" fixtures/captures
+
+      - name: Upload raw captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-captures-quic-${{ github.run_id }}
+          path: fixtures/captures/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fingerprint-report-quic-${{ github.run_id }}
           path: reports/
           retention-days: 90
           if-no-files-found: ignore

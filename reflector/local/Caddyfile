@@ -1,0 +1,32 @@
+# Local clienthellod reflector used by the QUIC pipeline (src/run-quic.ts).
+# scripts/start-quic-reflector.sh fills in the certificate paths. It serves a
+# private hostname only, so no public domain or DNS record is needed.
+{
+	admin off
+	log {
+		output file @LOG@
+		level DEBUG
+	}
+	auto_https off
+	order clienthellod before file_server
+	clienthellod {
+		tls_ttl 10s
+		quic_ttl 60s
+	}
+	servers {
+		listener_wrappers {
+			clienthellod {
+				tcp
+				udp
+			}
+			tls
+		}
+	}
+}
+
+https://reflector.test {
+	tls @CERT@ @KEY@
+	clienthellod {
+		quic
+	}
+}
