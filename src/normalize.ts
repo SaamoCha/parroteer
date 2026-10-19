@@ -152,8 +152,10 @@ function parseBrowserleaksTls(tls: Record<string, unknown>): {
 
   // signature_algorithms from ext 13
   const sigAlgExt = findExt(rawExts, 13);
+  // Chrome GREASEs signature_algorithms too (e.g. 0xEAEA); without the
+  // sentinel the random value changes every run and defeats known-diff dedup.
   const signature_algorithms = sigAlgExt?.data
-    ? extractIdList(sigAlgExt.data.supported_signature_algorithms)
+    ? replaceGrease(extractIdList(sigAlgExt.data.supported_signature_algorithms))
     : [];
 
   // ALPN from ext 16 — protocol_name_list is an array of strings
