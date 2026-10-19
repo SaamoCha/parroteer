@@ -324,4 +324,4 @@ runs on `macos-26`.
 
 ## License
 
-TBD
+BSD 3-Clause, see [LICENSE](LICENSE).
