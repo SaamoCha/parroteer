@@ -5,7 +5,7 @@ go 1.27
 require (
 	github.com/gaukas/clienthellod v0.5.0-alpha
 	github.com/refraction-networking/uquic v0.0.7-0.20260804184259-837c7ce1b72b
-	github.com/refraction-networking/utls v1.8.3-0.20261006222701-ff1b50fbbe9a
+	github.com/refraction-networking/utls v1.8.3-0.20261108164504-a13c59ffe98b
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.59.0
 )

@@ -14,8 +14,8 @@ github.com/refraction-networking/clienthellod v0.5.0-alpha2 h1:h4y/a97p9EsxAdhXY
 github.com/refraction-networking/clienthellod v0.5.0-alpha2/go.mod h1:4vN+Qh4x2TznUMsfw6N3ohGjwvfs6lnwwNPUn7zI9bQ=
 github.com/refraction-networking/uquic v0.0.7-0.20260804184259-837c7ce1b72b h1:Mishx9fHA/sUb9sFw1d6BsToH21ROmxvlE21w8ccZSU=
 github.com/refraction-networking/uquic v0.0.7-0.20260804184259-837c7ce1b72b/go.mod h1:V7YxkYPGKymwH+m5sX9b2oszwmtOchVpA23nRZsktDg=
-github.com/refraction-networking/utls v1.8.3-0.20261006222701-ff1b50fbbe9a h1:YwnpbX4nj1GfLEsvGDDqzpbxTVVbHcEqCfUcfMYe1gc=
-github.com/refraction-networking/utls v1.8.3-0.20261006222701-ff1b50fbbe9a/go.mod h1:rc/ctWeKlh9LSk5k90KlSPcwF7P6D31mn/9GI2NAfBI=
+github.com/refraction-networking/utls v1.8.3-0.20261108164504-a13c59ffe98b h1:Mi/DuaTxHeNIQ9g1ylZicAqa6Cb9wkHRiNtQH9uZ7Ts=
+github.com/refraction-networking/utls v1.8.3-0.20261108164504-a13c59ffe98b/go.mod h1:rc/ctWeKlh9LSk5k90KlSPcwF7P6D31mn/9GI2NAfBI=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 go.uber.org/mock v0.5.2 h1:LbtPTcP8A5k9WPXj54PPPbjcI4Y6lhyOZXn+VS7wNko=
